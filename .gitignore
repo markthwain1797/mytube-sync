@@ -1,0 +1,23 @@
+# Python
+backend/venv/
+backend/__pycache__/
+backend/*.pyc
+
+# Database (created at runtime, never commit user data)
+data/
+*.db
+*.db-wal
+*.db-shm
+
+# OS cruft
+.DS_Store
+Thumbs.db
+
+# Editor
+.vscode/
+.idea/
+
+# Extension build artifacts
+*.zip
+*.xpi
+web-ext-artifacts/

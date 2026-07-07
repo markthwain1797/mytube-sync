@@ -1,0 +1,94 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<style>
+  :root {
+    --bg: #14171c;
+    --surface: #232830;
+    --text: #e8eaed;
+    --muted: #8b94a3;
+    --accent: #f0a868;
+    --accent-hover: #e0954f;
+    --border: #2a2f38;
+    --success-bg: rgba(61,220,151,0.12);
+    --success-text: #3ddc97;
+    --err-bg: rgba(224,101,79,0.12);
+    --err-text: #e0654f;
+  }
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  body {
+    font-family: 'Segoe UI', system-ui, Arial, sans-serif;
+    background: var(--bg);
+    color: var(--text);
+    width: 280px;
+    padding: 14px;
+    font-size: 13px;
+  }
+  h1 { font-size: 15px; margin-bottom: 12px; }
+  label {
+    display: block;
+    font-size: 11px;
+    color: var(--muted);
+    margin-bottom: 4px;
+    margin-top: 10px;
+  }
+  label:first-of-type { margin-top: 0; }
+  input, select {
+    width: 100%;
+    background: var(--surface);
+    color: var(--text);
+    border: 1px solid var(--border);
+    padding: 7px 9px;
+    border-radius: 8px;
+    font-size: 13px;
+  }
+  input:focus, select:focus { outline: 1px solid var(--accent); }
+  button {
+    width: 100%;
+    background: var(--accent);
+    color: #3a2410;
+    border: none;
+    padding: 8px;
+    border-radius: 8px;
+    font-size: 13px;
+    font-weight: 600;
+    cursor: pointer;
+    margin-top: 12px;
+  }
+  button:hover { background: var(--accent-hover); }
+  #status {
+    font-size: 12px;
+    padding: 7px 9px;
+    border-radius: 6px;
+    margin-top: 10px;
+    display: none;
+  }
+  #status.ok { background: var(--success-bg); color: var(--success-text); display: block; }
+  #status.err { background: var(--err-bg); color: var(--err-text); display: block; }
+  #currentInfo { font-size: 11px; color: var(--muted); margin-top: 8px; }
+</style>
+</head>
+<body>
+  <h1>MyTube Sync</h1>
+
+  <label id="lbl-url" for="backendUrl">Backend URL</label>
+  <input type="text" id="backendUrl" placeholder="https://example.com/mytube-sync">
+
+  <label id="lbl-token" for="apiToken">API Token</label>
+  <input type="password" id="apiToken" placeholder="Bearer token">
+
+  <label id="lbl-lang" for="langSelect">Language</label>
+  <select id="langSelect">
+    <option value="">Auto (browser default)</option>
+    <option value="en">English</option>
+    <option value="de">Deutsch</option>
+  </select>
+
+  <button id="saveBtn">Connect</button>
+  <div id="status"></div>
+  <p id="currentInfo"></p>
+
+<script src="popup.js"></script>
+</body>
+</html>

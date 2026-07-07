@@ -1,0 +1,27 @@
+[Unit]
+Description=MyTube Sync Backend Service
+After=network.target
+
+[Service]
+# Replace "mytube" with the user you want to run this under.
+# WorkingDirectory must be the PARENT of the app/ folder,
+# i.e. the directory that contains app/, venv/, and requirements.txt.
+User=mytube
+Group=mytube
+WorkingDirectory=/home/mytube
+ExecStart=/home/mytube/venv/bin/uvicorn app.main:app --host 127.0.0.1 --port 6060
+
+# Optional overrides:
+# Environment=MYTUBE_DB_PATH=/home/mytube/data/mytube.db
+# Environment=MYTUBE_ROOT_PATH=/mytube-sync
+
+Environment=PYTHONUNBUFFERED=1
+
+StandardOutput=journal
+StandardError=journal
+
+Restart=always
+RestartSec=3
+
+[Install]
+WantedBy=multi-user.target

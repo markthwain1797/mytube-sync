@@ -1,0 +1,57 @@
+{
+  "manifest_version": 2,
+  "name": "__MSG_extensionName__",
+  "default_locale": "en",
+  "version": "7.0.0",
+  "description": "__MSG_extensionDescription__",
+  "permissions": [
+    "storage",
+    "<all_urls>"
+  ],
+  "browser_specific_settings": {
+    "gecko": {
+      "id": "{e251daab-12ca-4101-8070-20fab02ae09d}",
+      "strict_min_version": "128.0",
+      "data_collection_permissions": {
+        "required": ["none"]
+      }
+    },
+    "gecko_android": {
+      "strict_min_version": "128.0"
+    }
+  },
+  "icons": {
+    "48": "icons/icon-48.png",
+    "96": "icons/icon-96.png"
+  },
+  "browser_action": {
+    "default_title": "MyTube Sync",
+    "default_popup": "popup.html",
+    "default_icon": {
+      "48": "icons/icon-48.png",
+      "96": "icons/icon-96.png"
+    }
+  },
+  "web_accessible_resources": [
+    "_locales/en/messages.json",
+    "_locales/de/messages.json"
+  ],
+  "content_scripts": [
+    {
+      "matches": [
+        "https://www.youtube.com/*",
+        "https://m.youtube.com/*"
+      ],
+      "css": [
+        "content.css"
+      ],
+      "js": [
+        "i18n.js",
+        "content.js",
+        "init.js"
+      ],
+      "run_at": "document_idle",
+      "all_frames": false
+    }
+  ]
+}
