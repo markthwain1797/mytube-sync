@@ -55,7 +55,9 @@
     "ytm-mobile-topbar-renderer + div[role='navigation']"
   ];
 
-  function getYtBottomNavHeight() {
+  // `allowFallbackScan` gates the expensive full-DOM branch below - see
+  // waitForYtNavAndSync for why this can't just run on every call.
+  function getYtBottomNavHeight(allowFallbackScan) {
     for (const sel of YT_BOTTOM_NAV_SELECTORS) {
       const el = document.querySelector(sel);
       if (el) {
@@ -68,9 +70,14 @@
       }
     }
 
+    if (!allowFallbackScan) return 0;
+
     // Generic fallback: scan all fixed-position elements anchored to the
     // bottom and pick the tallest one that spans the full width and sits at
     // the true bottom. This catches future YouTube DOM changes automatically.
+    // NOTE: this walks + getComputedStyle's every node on the page, so it's
+    // only allowed to run a handful of times (see fallbackTriesLeft below) -
+    // never on every mutation, or it reflow-storms the whole tab.
     let best = 0;
     for (const el of document.querySelectorAll("*")) {
       try {
@@ -89,7 +96,7 @@
   }
 
   function syncYtBottomNavOffset() {
-    const height = getYtBottomNavHeight();
+    const height = getYtBottomNavHeight(true);
     // Only write the var once we have a real measurement; the CSS default
     // keeps the bar safe until then.
     if (height > 0) {
@@ -104,31 +111,66 @@
     return location.pathname.startsWith("/watch") ? "0px" : "56px";
   }
 
+  // Single module-level observer/frame handle so that back-to-back
+  // navigations can never stack multiple full-subtree observers on top
+  // of each other.
+  let _navHeightObs = null;
+  let _navHeightRaf = null;
+
   // Poll until YouTube's nav bar exists, then measure and stop polling.
   // Uses MutationObserver so it fires the instant the element appears,
   // even on slow devices where YouTube's SPA takes >5s to render the nav.
+  //
+  // YouTube's SPA mutates the DOM constantly (view counts, chat, lazy
+  // thumbnails, etc.), so a naive "run the full check on every mutation"
+  // observer would fire hundreds of times a second — combined with the
+  // full-DOM fallback scan in getYtBottomNavHeight, that's enough
+  // getComputedStyle traffic to stall the tab. Mutations are coalesced
+  // into at most one check per animation frame, and the expensive
+  // fallback scan is capped to a handful of attempts total rather than
+  // running on every check.
   function waitForYtNavAndSync() {
     // Set a safe page-type default immediately
     document.documentElement.style.setProperty("--mts-yt-bottom-nav-height", getNavDefault());
 
-    const height = getYtBottomNavHeight();
+    const height = getYtBottomNavHeight(true);
     if (height > 0) {
       document.documentElement.style.setProperty("--mts-yt-bottom-nav-height", `${height}px`);
       return;
     }
 
-    // Watch the DOM for the nav element to appear
-    const obs = new MutationObserver(() => {
-      const h = getYtBottomNavHeight();
+    // Tear down any watcher left over from a previous navigation.
+    if (_navHeightObs) { _navHeightObs.disconnect(); _navHeightObs = null; }
+    if (_navHeightRaf) { cancelAnimationFrame(_navHeightRaf); _navHeightRaf = null; }
+
+    let fallbackTriesLeft = 6;
+    let checkPending = false;
+
+    const runCheck = () => {
+      checkPending = false;
+      const useFallback = fallbackTriesLeft > 0;
+      if (useFallback) fallbackTriesLeft--;
+      const h = getYtBottomNavHeight(useFallback);
       if (h > 0) {
         document.documentElement.style.setProperty("--mts-yt-bottom-nav-height", `${h}px`);
         obs.disconnect();
+        if (_navHeightObs === obs) _navHeightObs = null;
       }
+    };
+
+    // Watch the DOM for the nav element to appear
+    const obs = new MutationObserver(() => {
+      if (checkPending) return; // already have a check scheduled for this frame
+      checkPending = true;
+      _navHeightRaf = requestAnimationFrame(runCheck);
     });
+    _navHeightObs = obs;
     obs.observe(document.body, { childList: true, subtree: true });
 
     // Safety: disconnect after 30s regardless
-    setTimeout(() => obs.disconnect(), 30000);
+    setTimeout(() => {
+      if (_navHeightObs === obs) { obs.disconnect(); _navHeightObs = null; }
+    }, 30000);
   }
 
   // ---------- Shorts handling ----------
@@ -175,9 +217,14 @@
   // YouTube fires this custom event on SPA navigations
   window.addEventListener("yt-navigate-finish", onNavigate);
 
-  // Fallback observer in case the event above isn't available (e.g. some mobile builds)
-  const navObserver = new MutationObserver(() => onNavigate());
-  navObserver.observe(document.body, { childList: true, subtree: true });
+  // Fallback observer for mobile builds that don't fire yt-navigate-finish.
+  // Watch only the <title> element — it changes on every navigation but not
+  // on every DOM mutation, avoiding the runaway loop caused by watching body.
+  const titleEl = document.querySelector("title");
+  if (titleEl) {
+    const navObserver = new MutationObserver(() => onNavigate());
+    navObserver.observe(titleEl, { childList: true, characterData: true });
+  }
 
   // ---------- Video playback tracking ----------
   function findVideoElement() {
@@ -258,7 +305,11 @@
   // ---------- Storage change listener (popup updates) ----------
   browser.storage.onChanged.addListener(async (changes, area) => {
     if (area !== "local") return;
-    if (changes.backendUrl || changes.apiToken || changes.userName) {
+    // userName intentionally excluded here: it's only ever written by
+    // popup.js at Connect time, together with backendUrl/apiToken, which
+    // already trigger this branch. The content script itself never writes
+    // userName, so it doesn't need to react to it changing.
+    if (changes.backendUrl || changes.apiToken) {
       await window.__mts.loadSettings();
       window.__mts.updateSyncIndicators();
       await window.__mts.syncAllState();
@@ -324,7 +375,12 @@
 
     setTimeout(attachVideoTracking, 1000);
 
-    // Periodic background resync (every 5 minutes) to pick up feed updates
-    setInterval(() => window.__mts.syncAllState(), 5 * 60 * 1000);
+    // Periodic background resync (every 5 minutes) to pick up feed updates.
+    // Skipped while the tab is hidden - no point re-fetching playlists/
+    // history/RSS feeds for a tab nobody is looking at.
+    setInterval(() => {
+      if (document.visibilityState === "hidden") return;
+      window.__mts.syncAllState();
+    }, 5 * 60 * 1000);
   });
 })();

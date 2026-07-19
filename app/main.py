@@ -66,21 +66,6 @@ class PlaylistItemCreate(BaseModel):
     video_id: str
 
 
-class HistoryBulkImport(BaseModel):
-    video_ids: List[str]  # list of video IDs to mark as completed
-
-
-class PlaylistBulkImport(BaseModel):
-    video_ids: List[str]  # ordered list of video IDs to add
-
-
-class UserResponse(BaseModel):
-    id: int
-    name: str
-
-    class Config:
-        from_attributes = True
-
 class UserCreate(BaseModel):
     name: str
 
@@ -276,14 +261,21 @@ async def get_subscription_feed(
 
 @app.get("/history")
 def get_history(
+    limit: int = None,
+    offset: int = 0,
     db: Session = Depends(get_db),
     user: models.User = Depends(get_current_user)
 ):
-    return db.query(models.History).filter_by(
+    q = db.query(models.History).filter_by(
         user_id=user.id
     ).order_by(
         models.History.last_watched_at.desc()
-    ).all()
+    )
+    if offset:
+        q = q.offset(offset)
+    if limit is not None:
+        q = q.limit(limit)
+    return q.all()
 
 
 @app.post("/history/update")
@@ -327,32 +319,6 @@ def update_history(
         }
     }
     
-@app.post("/history/bulk")
-def bulk_import_history(
-    payload: HistoryBulkImport,
-    db: Session = Depends(get_db),
-    user: models.User = Depends(get_current_user)
-):
-    """
-    Import a batch of video IDs as completed watch history in a single transaction.
-    Already-existing entries are skipped (not overwritten).
-    Returns counts of added and skipped entries.
-    """
-    existing = {
-        row.video_id
-        for row in db.query(models.History.video_id).filter_by(user_id=user.id).all()
-    }
-    to_add = [vid for vid in payload.video_ids if vid not in existing]
-    for vid in to_add:
-        db.add(models.History(
-            user_id=user.id,
-            video_id=vid,
-            progress_seconds=0,
-            completed=True,
-        ))
-    db.commit()
-    return {"success": True, "added": len(to_add), "skipped": len(payload.video_ids) - len(to_add)}
-
 
 # =========================
 # Playlists
@@ -495,44 +461,6 @@ def add_to_playlist(
             "video_id": new_item.video_id
         }
     }
-
-
-@app.post("/playlists/{playlist_id}/bulk")
-def bulk_add_to_playlist(
-    playlist_id: int,
-    payload: PlaylistBulkImport,
-    db: Session = Depends(get_db),
-    user: models.User = Depends(get_current_user)
-):
-    """
-    Add a batch of video IDs to a playlist in a single transaction.
-    Duplicate entries (already in the playlist) are silently skipped.
-    Positions are assigned sequentially from the current playlist end.
-    """
-    playlist = db.query(models.Playlist).filter_by(
-        id=playlist_id, user_id=user.id
-    ).first()
-    if not playlist:
-        raise HTTPException(status_code=404, detail="Playlist not found")
-
-    existing = {
-        row.video_id
-        for row in db.query(models.PlaylistItem.video_id).filter_by(playlist_id=playlist_id).all()
-    }
-    position = db.query(models.PlaylistItem).filter_by(playlist_id=playlist_id).count()
-
-    added = skipped = 0
-    for vid in payload.video_ids:
-        if vid in existing:
-            skipped += 1
-            continue
-        position += 1
-        db.add(models.PlaylistItem(playlist_id=playlist_id, video_id=vid, position=position))
-        existing.add(vid)
-        added += 1
-
-    db.commit()
-    return {"success": True, "added": added, "skipped": skipped}
 
 
 @app.delete("/playlists/{playlist_id}/item/{video_id}")
@@ -703,7 +631,9 @@ def frontend():
 
 # =========================
 # Healthcheck
-# =========================@app.get("/health")
+# =========================
+
+@app.get("/health")
 def health():
     return {
         "status": "ok"

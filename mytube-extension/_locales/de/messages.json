@@ -2,16 +2,6 @@
   "extensionName": { "message": "MyTube Sync" },
   "extensionDescription": { "message": "Selbst gehostete Synchronisation für Abonnements, Wiedergabelisten und Wiedergabeverlauf auf YouTube." },
 
-  "popupBackendUrl": { "message": "Backend-URL" },
-  "popupApiToken": { "message": "API-Token" },
-  "popupConnect": { "message": "Verbinden" },
-  "popupConnectedAs": { "message": "Verbunden als: $NAME$", "placeholders": { "name": { "content": "$1" } } },
-  "popupConnectionFailed": { "message": "Verbindung fehlgeschlagen: $MSG$", "placeholders": { "msg": { "content": "$1" } } },
-  "popupInvalidToken": { "message": "Ungültiger Token oder Backend nicht erreichbar" },
-  "popupEnterBackendUrl": { "message": "Bitte Backend-URL eingeben." },
-  "popupEnterToken": { "message": "Bitte API-Token eingeben." },
-  "popupLanguage": { "message": "Sprache" },
-
   "tabSubscriptions": { "message": "Abonnements" },
   "tabPlaylists": { "message": "Wiedergabelisten" },
   "tabHistory": { "message": "Verlauf" },
@@ -19,6 +9,7 @@
   "notConnected": { "message": "Nicht verbunden" },
   "notConnectedMsg": { "message": "Nicht verbunden. Bitte im Erweiterungs-Popup einrichten." },
   "loading": { "message": "Wird geladen…" },
+  "loadMore": { "message": "250 weitere laden…" },
   "reloadTitle": { "message": "Abonnements, Wiedergabelisten & Verlauf neu laden" },
 
   "noSubscriptions": { "message": "Noch keine Abonnements." },
@@ -46,8 +37,5 @@
   "cantSubscribeNoHandle": { "message": "Kein @Handle für diesen Kanal gefunden – Abonnieren nicht möglich." },
 
   "playlistLiked": { "message": "Gefällt mir" },
-  "playlistWatchLater": { "message": "Später ansehen" },
-
-  "langEn": { "message": "English" },
-  "langDe": { "message": "Deutsch" }
+  "playlistWatchLater": { "message": "Später ansehen" }
 }

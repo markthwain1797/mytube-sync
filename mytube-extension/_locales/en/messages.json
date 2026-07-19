@@ -2,16 +2,6 @@
   "extensionName": { "message": "MyTube Sync" },
   "extensionDescription": { "message": "Self-hosted sync for subscriptions, playlists and watch history on YouTube." },
 
-  "popupBackendUrl": { "message": "Backend URL" },
-  "popupApiToken": { "message": "API Token" },
-  "popupConnect": { "message": "Connect" },
-  "popupConnectedAs": { "message": "Connected as: $NAME$", "placeholders": { "name": { "content": "$1" } } },
-  "popupConnectionFailed": { "message": "Connection failed: $MSG$", "placeholders": { "msg": { "content": "$1" } } },
-  "popupInvalidToken": { "message": "Invalid token or backend unreachable" },
-  "popupEnterBackendUrl": { "message": "Enter a backend URL." },
-  "popupEnterToken": { "message": "Enter an API token." },
-  "popupLanguage": { "message": "Language" },
-
   "tabSubscriptions": { "message": "Subscriptions" },
   "tabPlaylists": { "message": "Playlists" },
   "tabHistory": { "message": "History" },
@@ -19,6 +9,7 @@
   "notConnected": { "message": "Not connected" },
   "notConnectedMsg": { "message": "Not connected. Set up via the extension popup." },
   "loading": { "message": "Loading…" },
+  "loadMore": { "message": "Load 250 more…" },
   "reloadTitle": { "message": "Reload subscriptions, playlists & history" },
 
   "noSubscriptions": { "message": "No subscriptions yet." },
@@ -46,8 +37,5 @@
   "cantSubscribeNoHandle": { "message": "Can't subscribe: no @handle found for this channel." },
 
   "playlistLiked": { "message": "Liked Videos" },
-  "playlistWatchLater": { "message": "Watch Later" },
-
-  "langEn": { "message": "English" },
-  "langDe": { "message": "Deutsch" }
+  "playlistWatchLater": { "message": "Watch Later" }
 }

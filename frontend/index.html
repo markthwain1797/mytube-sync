@@ -300,13 +300,15 @@ const SYS_LATER  = "Watch Later";
 
 // ── State ───────────────────────────────────────────────────────
 const S = {
-  playlists:  [],
-  plContents: {},   // id → [items]
-  history:    [],
-  subs:       [],
-  feed:       [],
-  activePl:   null,
-  connected:  false,
+  playlists:        [],
+  plContents:       {},   // id → [items]
+  history:          [],
+  historyOffset:    0,
+  historyExhausted: false,
+  subs:             [],
+  feed:             [],
+  activePl:         null,
+  connected:        false,
 };
 const metaCache = {};
 
@@ -322,12 +324,13 @@ function saveToken() {
 // ── API ─────────────────────────────────────────────────────────
 function token() { return document.getElementById("inp-token").value.trim(); }
 
+// Derive the API base from the page URL — works at any subpath, with or without trailing slash
+const API_BASE = window.location.pathname.replace(/\/+$/, "");
+
 async function api(path, method = "GET", body = null) {
   const opts = { method, headers: { "Authorization": `Bearer ${token()}`, "Content-Type": "application/json" } };
   if (body !== null) opts.body = JSON.stringify(body);
-  // "." makes the URL relative to the current page — resolves correctly
-  // whether the backend is at / or /some-prefix/
-  const r = await fetch("." + path, opts);
+  const r = await fetch(API_BASE + path, opts);
   if (!r.ok) throw new Error(`${method} ${path} → HTTP ${r.status}`);
   return r.json();
 }
@@ -419,6 +422,9 @@ async function connect() {
     status.textContent = `✓ ${user.name}`; status.className = "ok";
     S.connected = true;
     log(`Connected as ${user.name}`, "ok");
+    document.getElementById("pl-body").innerHTML   = `<p class="empty">Loading…</p>`;
+    document.getElementById("hist-body").innerHTML = `<p class="empty">Loading…</p>`;
+    document.getElementById("subs-body").innerHTML = `<p class="empty">Loading…</p>`;
     await syncAll();
   } catch (e) {
     status.textContent = "Failed"; status.className = "err";
@@ -429,6 +435,7 @@ async function connect() {
 async function syncAll() {
   if (!S.connected) return;
   log("Syncing…");
+  _histObs = null;  // reset history observer on each full sync
 
   // Fire everything simultaneously — each branch renders as soon as its own
   // data arrives, completely independent of the other columns.
@@ -453,10 +460,16 @@ async function syncAll() {
     }).catch(e => log("Playlists error: " + e.message, "err"));
 
     // ── History (streams cards top-to-bottom) ─────────────────────
-    api("/history").then(history => {
-      S.history = history;
-      document.getElementById("hist-meta").textContent = `${history.length}`;
-      streamHistory(history);
+    const HIST_PAGE = 250;
+    S.historyOffset = 0;
+    S.historyExhausted = false;
+    api(`/history?limit=${HIST_PAGE + 1}&offset=0`).then(rows => {
+      S.historyExhausted = rows.length <= HIST_PAGE;
+      S.history = rows.slice(0, HIST_PAGE);
+      S.historyOffset = S.history.length;
+      document.getElementById("hist-meta").textContent = `${S.history.length}${S.historyExhausted ? "" : "+"}`;
+      document.getElementById("hist-body").innerHTML = "";
+      streamHistory(S.history, !S.historyExhausted);
     }).catch(e => log("History error: " + e.message, "err"));
 
     // ── Subscription feed (updates subs column when ready) ────────
@@ -567,36 +580,17 @@ function renderHistory() {
   }).join("");
 }
 
-async function streamHistory(history) {
-  const body = document.getElementById("hist-body");
-  if (!history.length) {
-    body.innerHTML = `<p class="empty">No watch history yet.</p>`;
-    return;
-  }
+// ── History observer (one instance, reused across load-more calls) ──
+let _histObs = null;
 
-  // Render all cards immediately using the always-available thumbnail URL.
-  // Titles say "Loading…" until oEmbed resolves.
-  body.innerHTML = history.map(h => {
-    const cached = metaCache[h.video_id];
-    const thumb = `https://img.youtube.com/vi/${h.video_id}/mqdefault.jpg`;
-    const m = cached || { title: "Loading…", author: "", thumb };
-    return `<div class="media-card" data-vid="${h.video_id}">
-      <img src="${esc(m.thumb)}" loading="lazy" alt="">
-      <div class="media-info">
-        <a class="media-title" href="${watchLink(h.video_id)}" target="_blank">${esc(m.title)}</a>
-        <div class="media-meta mts-author">${esc(m.author)}</div>
-        ${progHTML(h.video_id)}
-      </div>
-    </div>`;
-  }).join("");
-
-  // Lazily fill in titles as cards scroll into view
-  const obs = new IntersectionObserver((entries) => {
+function _getHistObs() {
+  if (_histObs) return _histObs;
+  _histObs = new IntersectionObserver((entries) => {
     for (const entry of entries) {
       if (!entry.isIntersecting) continue;
       const card = entry.target;
       const vid = card.dataset.vid;
-      obs.unobserve(card);
+      _histObs.unobserve(card);
       if (metaCache[vid]?.title && metaCache[vid].title !== "Loading…") continue;
       getMeta(vid).then(m => {
         const titleEl = card.querySelector(".media-title");
@@ -606,15 +600,75 @@ async function streamHistory(history) {
       });
     }
   }, { rootMargin: "200px" });
+  return _histObs;
+}
 
-  body.querySelectorAll(".media-card[data-vid]").forEach(card => obs.observe(card));
+async function streamHistory(history, hasMore) {
+  const body = document.getElementById("hist-body");
+  if (!history.length) {
+    body.innerHTML = `<p class="empty">No watch history yet.</p>`;
+    return;
+  }
+
+  // Remove existing "load more" button before appending new cards
+  const existing = body.querySelector(".hist-load-more");
+  if (existing) existing.remove();
+
+  const obs = _getHistObs();
+  history.forEach(h => {
+    const cached = metaCache[h.video_id];
+    const thumb = `https://img.youtube.com/vi/${h.video_id}/mqdefault.jpg`;
+    const m = cached || { title: "Loading…", author: "", thumb };
+    const div = document.createElement("div");
+    div.className = "media-card";
+    div.dataset.vid = h.video_id;
+    div.innerHTML = `
+      <img src="${esc(m.thumb)}" loading="lazy" alt="">
+      <div class="media-info">
+        <a class="media-title" href="${watchLink(h.video_id)}" target="_blank">${esc(m.title)}</a>
+        <div class="media-meta mts-author">${esc(m.author)}</div>
+        ${progHTML(h.video_id)}
+      </div>`;
+    body.appendChild(div);
+    obs.observe(div);  // only observe the new card, never re-scan existing ones
+  });
+
+  if (hasMore) {
+    body.insertAdjacentHTML("beforeend",
+      `<button class="btn btn-ghost hist-load-more" onclick="loadMoreHistory()" style="width:100%;margin-top:8px">Load 250 more…</button>`);
+  }
+}
+
+async function loadMoreHistory() {
+  const btn = document.querySelector(".hist-load-more");
+  if (btn) { btn.disabled = true; btn.textContent = "Loading…"; }
+
+  const HIST_PAGE = 250;
+  try {
+    const rows = await api(`/history?limit=${HIST_PAGE + 1}&offset=${S.historyOffset}`);
+    const hasMore = rows.length > HIST_PAGE;
+    const newEntries = rows.slice(0, HIST_PAGE);
+    S.history = S.history.concat(newEntries);
+    S.historyOffset += newEntries.length;
+    S.historyExhausted = !hasMore;
+    document.getElementById("hist-meta").textContent =
+      `${S.historyOffset}${S.historyExhausted ? "" : "+"}`;
+    if (btn) btn.remove();
+    await streamHistory(newEntries, hasMore);
+  } catch (e) {
+    if (btn) { btn.disabled = false; btn.textContent = "Load 250 more…"; }
+    log("History error: " + e.message, "err");
+  }
 }
 
 // ── Subscriptions column ─────────────────────────────────────────
 function renderSubs() {
   const body = document.getElementById("subs-body");
   document.getElementById("subs-meta").textContent = `${S.subs.length}`;
-  if (!S.subs.length) { body.innerHTML = `<p class="empty">No subscriptions.</p>`; return; }
+  if (!S.subs.length) {
+    body.innerHTML = `<p class="empty">${S.connected ? "Loading…" : "Connect to load."}</p>`;
+    return;
+  }
 
   if (!S.feed.length) {
     // Feed not loaded yet — show channel list only

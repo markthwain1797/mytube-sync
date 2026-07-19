@@ -21,6 +21,8 @@
     subscriptions: [],
     playlists: [],
     history: [],
+    historyOffset: 0,
+    historyExhausted: false,
     playlistContentsMap: {},
     backendFeed: [],
     syncStatus: "idle", // idle | busy | ok | err
@@ -30,6 +32,12 @@
 
   let metadataCache = {};
   let metadataLoaded = false;
+
+  // History IntersectionObserver — module-level so it can be disconnected on re-sync
+  let _histObs = null;
+
+  // Per-tab data version counters — renderIntoTarget skips repaint if version unchanged
+  const _dataVer = { subs: 0, playlists: 0, history: 0 };
 
   // ---------- Storage ----------
   async function loadSettings() {
@@ -187,15 +195,37 @@
     appState.syncStatus = "busy";
     updateSyncIndicators();
 
-    try {
-      // Need subs + playlists synchronously first only to ensure system playlists exist.
-      // Everything else fires in parallel and renders as it arrives.
-      let [subs, playlists] = await Promise.all([
-        apiRequest("/subscriptions"),
-        apiRequest("/playlists"),
-      ]);
+    if (_histObs) { _histObs.disconnect(); _histObs = null; }
 
-      // Ensure system playlists exist on first run
+    // Reset the history "page" trackers so this sync starts from page 1,
+    // but don't clear appState.history itself — the old page stays on
+    // screen until the new one arrives and replaces it below, instead of
+    // flashing empty for the duration of the request.
+    appState.historyOffset = 0;
+    appState.historyExhausted = false;
+
+    // Four fully independent branches, mirroring the web frontend. Each
+    // fetches its own data and repaints only its own section the moment
+    // that data lands, so a slow branch (the feed does one RSS fetch per
+    // subscription on the backend) never delays or blanks out the others.
+    //
+    // Note: /current_user is intentionally not fetched here. popup.js
+    // fetches it once and stores userName at Connect time, and
+    // appState.userName is loaded from that via loadSettings(). Writing
+    // userName to storage from inside syncAllState would re-trigger the
+    // storage.onChanged listener below (which calls syncAllState), so it
+    // must only ever be written at Connect time.
+
+    const subsDone = apiRequest("/subscriptions").then(subs => {
+      appState.subscriptions = subs;
+      _dataVer.subs++;
+      renderActiveTab();
+      renderCurrentCard();
+    }).catch(e => console.error("MyTube Sync: subscriptions failed", e));
+
+    const playlistsDone = apiRequest("/playlists").then(async playlists => {
+      // Backend already creates "Liked Videos" / "Watch Later" for every
+      // new account - this only matters for an older/hand-rolled account.
       const hasLiked = playlists.some(p => p.name === SYS_LIKED);
       const hasLater = playlists.some(p => p.name === SYS_LATER);
       if (!hasLiked || !hasLater) {
@@ -203,61 +233,45 @@
         if (!hasLater) await apiRequest("/playlists", "POST", { name: SYS_LATER });
         playlists = await apiRequest("/playlists");
       }
+      appState.playlists = playlists;
 
-      appState.subscriptions = subs;
-      appState.playlists     = playlists;
-      appState.history       = [];
-
-      // Persist userName so the label survives browser restarts
-      try {
-        const user = await apiRequest("/current_user");
-        appState.userName = user.name;
-        browser.storage.local.set({ userName: user.name });
-      } catch (_) {}
-
-      // Render what we have immediately (subs list, empty history)
-      appState.syncStatus = "ok";
-      syncInFlight = false;
-      updateSyncIndicators();
-      renderActiveTab();
-      renderCurrentCard();
-
-      // ── All remaining fetches are fully parallel ──────────────
-
-      // Playlist contents + oEmbed, then re-render
-      Promise.all(playlists.map(async pl => {
+      await Promise.all(playlists.map(async pl => {
         appState.playlistContentsMap[pl.id] = await apiRequest(`/playlists/${pl.id}`);
-      })).then(async () => {
-        const ids = Object.values(appState.playlistContentsMap).flat().map(i => i.video_id);
-        await prefetchMetadata(ids);
-        renderActiveTab();
-      }).catch(() => {});
-
-      // History — set and re-render when it arrives
-      apiRequest("/history").then(history => {
-        appState.history = history;
-        renderActiveTab();
-        renderCurrentCard();
-      }).catch(() => {});
-
-      // Feed — set and re-render when it arrives
-      apiRequest("/subscriptions/feed").then(async feed => {
-        appState.backendFeed = feed;
-        const ids = feed.flatMap(ch => (ch.videos || []).map(v => v.video_id));
-        await prefetchMetadata(ids);
-        renderActiveTab();
-      }).catch(() => {
-        appState.backendFeed = [];
-      });
-
-    } catch (e) {
-      console.error("MyTube Sync error:", e);
-      appState.syncStatus = "err";
-      syncInFlight = false;
-      updateSyncIndicators();
+      }));
+      const ids = Object.values(appState.playlistContentsMap).flat().map(i => i.video_id);
+      await prefetchMetadata(ids);
+      _dataVer.playlists++;
       renderActiveTab();
       renderCurrentCard();
-    }
+    }).catch(e => console.error("MyTube Sync: playlists failed", e));
+
+    const HIST_PAGE = 250;
+    const historyDone = apiRequest(`/history?limit=${HIST_PAGE + 1}`).then(rows => {
+      appState.historyExhausted = rows.length <= HIST_PAGE;
+      appState.history = rows.slice(0, HIST_PAGE);
+      appState.historyOffset = appState.history.length;
+      _dataVer.history++;
+      renderActiveTab();
+      renderCurrentCard();
+    }).catch(e => console.error("MyTube Sync: history failed", e));
+
+    const feedDone = apiRequest("/subscriptions/feed").then(async feed => {
+      appState.backendFeed = feed;
+      const ids = feed.flatMap(ch => (ch.videos || []).map(v => v.video_id));
+      await prefetchMetadata(ids);
+      _dataVer.subs++;
+      renderActiveTab();
+    }).catch(e => {
+      console.error("MyTube Sync: feed failed", e);
+      appState.backendFeed = [];
+    });
+
+    const results = await Promise.allSettled([subsDone, playlistsDone, historyDone, feedDone]);
+    syncInFlight = false;
+    appState.syncStatus = results.some(r => r.status === "rejected") ? "err" : "ok";
+    updateSyncIndicators();
+    renderActiveTab();
+    renderCurrentCard();
   }
 
   function updateSyncIndicators() {
@@ -487,7 +501,6 @@
   // history/playlist/sub content to bleed into the wrong tab.
   let desktopTabId = "subs";
   let mobileTabId = "subs";
-  let _renderGen = 0; // incremented each render; used to abort stale async renders
 
   function setActiveTab(tabId, container) {
     if (container) {
@@ -498,76 +511,68 @@
         t.classList.toggle("mts-tab-active", t.dataset.tab === tabId);
       });
     }
-    renderActiveTab(container);
+    // Tab switch: force full repaint + scroll to top
+    renderIntoTarget(
+      container || document.getElementById("mts-tab-content"),
+      container ? mobileTabId : desktopTabId,
+      true
+    );
   }
 
-  async function renderActiveTab(container) {
-    const gen = ++_renderGen;
+  // Called by async data callbacks — repaints each surface only if data version changed
+  function renderActiveTab() {
+    const desktopTarget = document.getElementById("mts-tab-content");
+    if (desktopTarget) renderIntoTarget(desktopTarget, desktopTabId, false);
 
-    let target = container;
-    let tabId;
-    if (target) {
-      tabId = mobileTabId;
-    } else {
-      // No explicit container: refresh the desktop sidebar...
-      target = document.getElementById("mts-tab-content");
-      tabId = desktopTabId;
-      await renderInto(target, tabId, gen);
-
-      // ...and ALSO refresh the mobile popup if it's currently open, using
-      // its own independent tab state. Both surfaces can be live at once.
-      const mobilePopup = document.getElementById("mts-mobile-popup");
-      if (mobilePopup && mobilePopup.classList.contains("mts-open")) {
-        await renderInto(mobilePopup, mobileTabId, gen);
-      }
-      return;
+    const mobilePopup = document.getElementById("mts-mobile-popup");
+    if (mobilePopup && mobilePopup.classList.contains("mts-open")) {
+      renderIntoTarget(mobilePopup, mobileTabId, false);
     }
-    if (!target) return;
-
-    await renderInto(target, tabId, gen);
   }
 
-  async function renderInto(target, tabId, gen) {
+  function renderIntoTarget(target, tabId, force) {
     if (!target) return;
+    const ver = _dataVer[tabId] || 0;
+    const rendered = parseInt(target.dataset.renderedVer || "-1", 10);
+    const renderedTab = target.dataset.renderedTab;
 
-    // Reset scroll position so switching tabs always starts at the top
-    target.scrollTop = 0;
+    if (!force && renderedTab === tabId && rendered === ver) return; // nothing changed
 
+    if (force) target.scrollTop = 0;
+    target.dataset.renderedTab = tabId;
+    target.dataset.renderedVer = ver;
     target.innerHTML = `<div class="mts-empty-msg">${window.__mts.t("notConnectedMsg")}</div>`;
 
     if (tabId === "subs") {
-      await renderSubscriptionsTab(target, gen);
+      renderSubscriptionsTab(target);
     } else if (tabId === "playlists") {
-      await renderPlaylistsTab(target, gen);
+      renderPlaylistsTab(target);
     } else if (tabId === "history") {
-      await renderHistoryTab(target, gen);
+      renderHistoryTab(target);
     }
   }
 
   // ---------- UI: Subscriptions Tab ----------
-  async function renderSubscriptionsTab(target, gen) {
+  function renderSubscriptionsTab(target) {
     if (!appState.backendUrl || !appState.apiToken) {
       target.innerHTML = `<div class="mts-empty-msg">${window.__mts.t("notConnectedMsg")}</div>`;
       return;
     }
     if (appState.backendFeed.length === 0) {
-      // Show channel list while feed is loading, or empty state if no subs at all
-      if (appState.subscriptions.length === 0) {
-        target.innerHTML = `<div class="mts-empty-msg">${window.__mts.t("noSubscriptions")}</div>`;
-      } else {
-        target.innerHTML = `<div class="mts-empty-msg">${window.__mts.t("loading")}</div>`;
-      }
+      target.innerHTML = `<div class="mts-empty-msg">${
+        appState.subscriptions.length === 0
+          ? window.__mts.t("noSubscriptions")
+          : window.__mts.t("loading")
+      }</div>`;
       return;
     }
 
-    // Flatten all videos across channels and sort by upload date (newest first)
     const allVideos = [];
     for (const feedItem of appState.backendFeed) {
       for (const v of (feedItem.videos || [])) {
         allVideos.push({ ...v, channel_id: feedItem.channel_id });
       }
     }
-
     allVideos.sort((a, b) => {
       const da = a.published ? new Date(a.published).getTime() : 0;
       const db = b.published ? new Date(b.published).getTime() : 0;
@@ -581,9 +586,7 @@
 
     target.innerHTML = "";
     for (const v of allVideos) {
-      if (gen !== _renderGen) return; // abort stale render
-      const meta = await getVideoMetadata(v.video_id);
-      if (gen !== _renderGen) return;
+      const meta = metadataCache[v.video_id] || { title: v.video_id, author: "", thumbnail: `https://img.youtube.com/vi/${v.video_id}/mqdefault.jpg` };
       const card = document.createElement("div");
       card.className = "mts-media-card";
       card.innerHTML = `
@@ -601,7 +604,7 @@
   }
 
   // ---------- UI: Playlists Tab ----------
-  async function renderPlaylistsTab(target, gen) {
+  function renderPlaylistsTab(target) {
     if (!appState.backendUrl || !appState.apiToken) {
       target.innerHTML = `<div class="mts-empty-msg">${window.__mts.t("notConnectedMsg")}</div>`;
       return;
@@ -609,7 +612,6 @@
 
     target.innerHTML = "";
 
-    // --- Create playlist form ---
     const createRow = document.createElement("div");
     createRow.className = "mts-create-row";
     createRow.innerHTML = `
@@ -627,9 +629,7 @@
       await syncAllState();
     };
     createBtn.addEventListener("click", submitCreate);
-    nameInput.addEventListener("keydown", (e) => {
-      if (e.key === "Enter") submitCreate();
-    });
+    nameInput.addEventListener("keydown", (e) => { if (e.key === "Enter") submitCreate(); });
 
     if (appState.playlists.length === 0) {
       const empty = document.createElement("div");
@@ -642,11 +642,8 @@
     }
 
     for (const pl of appState.playlists) {
-      if (gen !== _renderGen) return; // abort stale render
-
       const isSystem = pl.name === SYS_LIKED || pl.name === SYS_LATER;
       const isExpanded = !!appState.expandedPlaylists[pl.id];
-
       const displayName = pl.name === SYS_LIKED
         ? window.__mts.t("playlistLiked")
         : pl.name === SYS_LATER
@@ -664,6 +661,7 @@
       `;
       row.querySelector(".mts-playlist-name").addEventListener("click", () => {
         appState.expandedPlaylists[pl.id] = !appState.expandedPlaylists[pl.id];
+        _dataVer.playlists++;
         renderActiveTab();
       });
 
@@ -683,19 +681,14 @@
       if (isExpanded) {
         const itemsContainer = document.createElement("div");
         itemsContainer.className = "mts-playlist-items";
-        // Append the container immediately so the playlist rows stay in order
-        // even while we await metadata below.
         target.appendChild(itemsContainer);
 
         const items = appState.playlistContentsMap[pl.id] || [];
-
         if (items.length === 0) {
           itemsContainer.innerHTML = `<div class="mts-empty-msg">${window.__mts.t("emptyPlaylist")}</div>`;
         } else {
           for (const item of items) {
-            if (gen !== _renderGen) return; // abort stale render
-            const meta = await getVideoMetadata(item.video_id);
-            if (gen !== _renderGen) return;
+            const meta = metadataCache[item.video_id] || { title: item.video_id, author: "", thumbnail: `https://img.youtube.com/vi/${item.video_id}/mqdefault.jpg` };
             const card = document.createElement("div");
             card.className = "mts-media-card";
             card.innerHTML = `
@@ -723,12 +716,11 @@
   }
 
   // ---------- UI: History Tab ----------
-  async function renderHistoryTab(target, gen) {
+  function renderHistoryTab(target) {
     if (!appState.backendUrl || !appState.apiToken) {
       target.innerHTML = `<div class="mts-empty-msg">${window.__mts.t("notConnectedMsg")}</div>`;
       return;
     }
-    // syncStatus "busy" means the initial fetch is still in flight
     if (appState.history.length === 0 && appState.syncStatus !== "err") {
       target.innerHTML = `<div class="mts-empty-msg">${window.__mts.t("loading")}</div>`;
       return;
@@ -739,23 +731,85 @@
     }
 
     target.innerHTML = "";
-    for (const track of appState.history) {
-      if (gen !== _renderGen) return; // abort stale render
-      const meta = await getVideoMetadata(track.video_id);
-      if (gen !== _renderGen) return;
+
+    // Disconnect any previous observer before creating a new one
+    if (_histObs) { _histObs.disconnect(); _histObs = null; }
+
+    const obs = new IntersectionObserver((entries) => {
+      for (const entry of entries) {
+        if (!entry.isIntersecting) continue;
+        const card = entry.target;
+        obs.unobserve(card);
+        const vid = card.dataset.vid;
+        if (metadataCache[vid] && metadataCache[vid]._ts) continue;
+        getVideoMetadata(vid).then(meta => {
+          const titleEl = card.querySelector(".mts-media-title");
+          const authorEl = card.querySelector(".mts-author");
+          if (titleEl) { titleEl.textContent = meta.title; titleEl.href = getPlaybackLink(vid); }
+          if (authorEl) {
+            const completed = appState.history.find(h => h.video_id === vid)?.completed;
+            authorEl.textContent = meta.author + (completed ? " · " + window.__mts.t("watched") : "");
+          }
+        });
+      }
+    }, { rootMargin: "200px" });
+    _histObs = obs;
+
+    appendHistoryCards(target, appState.history, obs);
+  }
+
+  function appendHistoryCards(target, tracks, obs) {
+    const existing = target.querySelector(".mts-load-more");
+    if (existing) existing.remove();
+
+    for (const track of tracks) {
+      const thumb = `https://img.youtube.com/vi/${track.video_id}/mqdefault.jpg`;
+      const cached = metadataCache[track.video_id];
+      const title = cached ? cached.title : track.video_id;
+      const author = cached ? cached.author : "";
+
       const card = document.createElement("div");
       card.className = "mts-media-card";
+      card.dataset.vid = track.video_id;
       card.innerHTML = `
-        <img src="${meta.thumbnail}" alt="">
+        <img src="${thumb}" alt="">
         <div class="mts-media-info">
           <div>
-            <a class="mts-media-title" href="${getPlaybackLink(track.video_id)}">${escapeHtml(meta.title)}</a>
-            <div class="mts-media-meta">${escapeHtml(meta.author)}${track.completed ? " · " + window.__mts.t("watched") : ""}</div>
+            <a class="mts-media-title" href="${getPlaybackLink(track.video_id)}">${escapeHtml(title)}</a>
+            <div class="mts-media-meta mts-author">${escapeHtml(author)}${track.completed ? " · " + window.__mts.t("watched") : ""}</div>
             ${renderProgressBadge(track.video_id)}
           </div>
         </div>
       `;
       target.appendChild(card);
+      obs.observe(card);
+    }
+
+    if (!appState.historyExhausted) {
+      const btn = document.createElement("button");
+      btn.className = "mts-btn mts-load-more";
+      btn.textContent = window.__mts.t("loadMore");
+      btn.style.cssText = "width:100%;margin-top:8px";
+      btn.addEventListener("click", () => loadMoreHistory(target, obs));
+      target.appendChild(btn);
+    }
+  }
+
+  async function loadMoreHistory(target, obs) {
+    const btn = target.querySelector(".mts-load-more");
+    if (btn) { btn.disabled = true; btn.textContent = window.__mts.t("loading"); }
+
+    const HIST_PAGE = 250;
+    try {
+      const rows = await apiRequest(`/history?limit=${HIST_PAGE + 1}&offset=${appState.historyOffset}`);
+      const newEntries = rows.slice(0, HIST_PAGE);
+      appState.history = appState.history.concat(newEntries);
+      appState.historyOffset += newEntries.length;
+      appState.historyExhausted = rows.length <= HIST_PAGE;
+      if (btn) btn.remove();
+      appendHistoryCards(target, newEntries, obs);
+    } catch (e) {
+      if (btn) { btn.disabled = false; btn.textContent = window.__mts.t("loadMore"); }
     }
   }
 

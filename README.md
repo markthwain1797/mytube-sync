@@ -309,6 +309,23 @@ so German, English, and other Takeout exports are all handled the same way.
   handle yet, the subscribe button will be temporarily disabled rather than risking storing
   the raw ID. Navigating to the channel's `/@handle` URL always works.
 - **No dark/light mode toggle**: the sidebar uses a fixed dark theme.
+- **Clicking a video link in the sidebar/history/playlists reloads the tab**: YouTube's own
+  navigation links go through its internal SPA router, which stays on the page without a
+  reload. The video links here are plain `<a href>` tags outside that router, so clicking
+  one triggers a normal browser navigation instead — the tab reloads, and the extension
+  reinitializes from scratch. Driving YouTube's router directly (e.g. via
+  `history.pushState`/`popstate`) doesn't work reliably from a content script, since it
+  depends on internal state and click handling that isn't exposed. A full reload is slower
+  than an in-app transition but not broken — playback, history logging, and everything else
+  pick back up normally afterward.
+- **YouTube can't be installed as a real standalone app on Android**: unlike YouTube Music,
+  the main YouTube site's manifest doesn't meet Firefox's installability criteria. The most
+  likely gap — a missing 512px icon with `purpose: "any"`, found by comparing YouTube's
+  manifest against YouTube Music's working one — was patched in-flight via
+  `webRequest.filterResponseData` as an experiment, but it didn't resolve the issue,
+  meaning some other requirement is involved. Not currently pursued further, given the cost
+  of carrying the broader `webRequest`/`webRequestBlocking` permissions for no confirmed
+  benefit.
 
 ---
 
