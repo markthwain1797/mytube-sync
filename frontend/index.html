@@ -671,8 +671,9 @@ function renderSubs() {
   }
 
   if (!S.feed.length) {
-    // Feed not loaded yet — show channel list only
-    body.innerHTML = S.subs.map(s => `<div class="pl-row">
+    // Feed not loaded yet — show channel list only, alphabetically sorted
+    const sortedSubs = [...S.subs].sort((a, b) => a.channel_id.localeCompare(b.channel_id));
+    body.innerHTML = sortedSubs.map(s => `<div class="pl-row">
       <span class="pl-name">${esc(s.channel_id)}</span>
       <button class="btn btn-danger" onclick="unsub('${esc(s.channel_id)}')">Unsub</button>
     </div>`).join("");
@@ -680,7 +681,8 @@ function renderSubs() {
   }
 
   let html = "";
-  for (const ch of S.feed) {
+  const sortedFeed = [...S.feed].sort((a, b) => a.channel_id.localeCompare(b.channel_id));
+  for (const ch of sortedFeed) {
     const vids = (ch.videos || []).map(v => {
       const m = metaCache[v.video_id] || { title: v.video_id, author: ch.channel_id, thumb: `https://img.youtube.com/vi/${v.video_id}/mqdefault.jpg` };
       return mediaCard(v.video_id, m);

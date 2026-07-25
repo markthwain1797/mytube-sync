@@ -256,13 +256,24 @@ immediately.
 
 `mytube-import.py` imports your existing YouTube data from a Google Takeout export.
 
-### Get your Takeout export
+### Get your Takeout export(s)
+
+For subscriptions, playlists, and watch history:
 
 1. Go to [takeout.google.com](https://takeout.google.com)
 2. Deselect all, then select only **YouTube and YouTube Music**
 3. Under its options, make sure **subscriptions**, **playlists**, and **history** are
    included
 4. Export, download, and unzip the archive
+
+For liked videos, and to fill in gaps in watch history (see "Watch history" below), get a
+**second, separate** export:
+
+1. Go to [takeout.google.com](https://takeout.google.com)
+2. Deselect all, then select only **My Activity**
+3. Under its options, filter to just the **YouTube** product
+4. Export, download, and unzip the archive — it can be a separate folder from the one
+   above, or unzipped alongside it; the importer looks for both independently
 
 ### Run the importer
 
@@ -274,7 +285,7 @@ python3 mytube-import.py
 
 It will prompt for your backend URL, API token, and the path to the unzipped export
 folder, then ask which data types to import (subscriptions / playlists / watch history /
-all). Duplicates are silently skipped — safe to Ctrl+C and re-run.
+liked videos / all). Duplicates are silently skipped — safe to Ctrl+C and re-run.
 
 The importer works regardless of your Google account's language — it locates the
 relevant files by inspecting their contents rather than assuming fixed folder/file names,
@@ -287,11 +298,29 @@ so German, English, and other Takeout exports are all handled the same way.
   stored. A dropped count is shown at the end.
 - **Playlists:** Imported as-is. "Watch Later" is mapped to the system playlist of the
   same name. Everything else (including "Favorites") becomes a regular playlist.
-  Note that YouTube Takeout does **not** export your liked videos — the Liked Videos
-  system playlist will remain empty after import; this is a Google limitation.
-- **Watch history:** Takeout has no progress data. All history entries are imported as
-  "completed". For large histories (10k+ entries) this will take a while; the progress
-  bar updates continuously and it's safe to interrupt and re-run.
+- **Watch history:** supports both the JSON and HTML export formats from the main
+  Takeout category. JSON only goes back a limited window (a few months in practice);
+  HTML covers a much longer history. On top of that, if a **My Activity** export (see
+  above) is found, its watched-video entries are automatically merged in too — in
+  practice its retention window doesn't fully overlap with the dedicated history export
+  in either direction, so combining both gives noticeably more complete coverage than
+  either alone. Duplicates between the two sources are merged by video, keeping whichever
+  timestamp is more recent. Every entry carries its real per-entry timestamp, which is
+  used for correct chronological ordering — history is *not* just imported in file order.
+  Takeout has no watch-progress data, so all entries are imported as "completed"
+  regardless of how much was actually watched.
+- **Liked videos:** Takeout's "YouTube and YouTube Music" export does not include a Liked
+  Videos list — that's a Google limitation, not something this importer can work around
+  within that export. The data does exist in your Google account, though: it's recorded in
+  the separate **My Activity** export (filtered to YouTube) as individual "rated a video"
+  activity entries, each with a real timestamp. The importer detects and imports these,
+  populating the Liked Videos system playlist in correct chronological order. Disliked
+  videos are also detected in the same export but not imported anywhere, since there's no
+  "Disliked Videos" concept in MyTube Sync — they're only counted in the summary.
+  German-language exports are confirmed working; the English wording used to detect a
+  "liked" or "watched" entry is a best-effort guess, since no real English export was
+  available to verify against — if detection doesn't work on your export, please open an
+  issue with the exact wording it uses.
 
 ---
 

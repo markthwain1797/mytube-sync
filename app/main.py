@@ -5,6 +5,7 @@ import re
 import logging
 import traceback
 import secrets
+from datetime import datetime
 
 from fastapi import FastAPI, Depends, HTTPException, Header
 from fastapi.middleware.cors import CORSMiddleware
@@ -56,6 +57,10 @@ class HistoryUpdate(BaseModel):
     video_id: str
     progress_seconds: int
     completed: bool = False
+    # Optional explicit timestamp, used by the Takeout importer to preserve
+    # real watch dates. Left unset for normal extension/frontend use, which
+    # always means "right now".
+    watched_at: Optional[datetime] = None
 
 
 class PlaylistCreate(BaseModel):
@@ -64,6 +69,10 @@ class PlaylistCreate(BaseModel):
 
 class PlaylistItemCreate(BaseModel):
     video_id: str
+    # Optional explicit timestamp, used by the Takeout importer to preserve
+    # the real date a video was added (e.g. actually liked). Left unset for
+    # normal use, which always means "right now".
+    added_at: Optional[datetime] = None
 
 
 class UserCreate(BaseModel):
@@ -292,12 +301,15 @@ def update_history(
     if history_entry:
         history_entry.progress_seconds = item.progress_seconds
         history_entry.completed = item.completed
+        if item.watched_at:
+            history_entry.last_watched_at = item.watched_at
     else:
         history_entry = models.History(
             user_id=user.id,
             video_id=item.video_id,
             progress_seconds=item.progress_seconds,
-            completed=item.completed
+            completed=item.completed,
+            **({"last_watched_at": item.watched_at} if item.watched_at else {})
         )
 
         db.add(history_entry)
@@ -441,7 +453,8 @@ def add_to_playlist(
     new_item = models.PlaylistItem(
         playlist_id=playlist_id,
         video_id=item.video_id,
-        position=current_count + 1
+        position=current_count + 1,
+        **({"added_at": item.added_at} if item.added_at else {})
     )
 
     db.add(new_item)

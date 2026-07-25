@@ -20,8 +20,17 @@ Supported Takeout structures (any account language):
           <history-folder>/
               <anything>.html   OR  <anything>.json
 
+        My Activity/                          ← separate top-level Takeout category
+          YouTube/
+              <anything>.html                 ← liked/disliked video entries
+
 Discovery is content-based, not name-based, so it works regardless of the
 account language Google used when generating the export.
+
+Note on Liked Videos: Takeout's "YouTube and YouTube Music" export does not
+include a Liked Videos list. That data is only available via the separate
+"My Activity" Takeout category (select "My Activity" → filter to YouTube),
+which logs it as a rated-video activity entry rather than a playlist.
 """
 
 import os
@@ -32,6 +41,7 @@ import re
 import html.parser
 import urllib.request
 import urllib.error
+from datetime import datetime, timedelta
 
 
 # ---------------------------------------------------------------------------
@@ -66,6 +76,19 @@ def verify_connection(base_url, token):
 # Takeout structure discovery (locale-agnostic)
 # ---------------------------------------------------------------------------
 
+def _looks_like_my_activity_folder(name):
+    """
+    Does this folder name look like Takeout's "My Activity" category
+    (English "My Activity", German "Meine Aktivitäten")? Used to keep it
+    from being confused with the main "YouTube and YouTube Music" export -
+    its YouTube subfolder contains an HTML file with real youtube.com/watch
+    links too, which would otherwise satisfy _find_history_file's content
+    check and get misidentified as the watch-history folder.
+    """
+    low = name.lower()
+    return "my activity" in low or "aktivität" in low or "aktivitat" in low
+
+
 def _is_yt_folder(path):
     """Heuristic: does this directory look like the YouTube Takeout root?"""
     if not os.path.isdir(path):
@@ -74,6 +97,8 @@ def _is_yt_folder(path):
     # Must contain at least one of the characteristic sub-folders.
     # We check by sniffing content rather than names (see find_* helpers below).
     for entry in entries:
+        if _looks_like_my_activity_folder(entry):
+            continue
         sub = os.path.join(path, entry)
         if not os.path.isdir(sub):
             continue
@@ -99,6 +124,8 @@ def find_yt_folder(takeout_root):
         return None
 
     for name in children:
+        if _looks_like_my_activity_folder(name):
+            continue
         child = os.path.join(takeout_root, name)
         if not os.path.isdir(child):
             continue
@@ -107,6 +134,8 @@ def find_yt_folder(takeout_root):
         # Level 2: e.g. Takeout/ → "YouTube and YouTube Music/"
         try:
             for sub in os.listdir(child):
+                if _looks_like_my_activity_folder(sub):
+                    continue
                 sub_path = os.path.join(child, sub)
                 if os.path.isdir(sub_path) and _is_yt_folder(sub_path):
                     return sub_path
@@ -214,10 +243,13 @@ def _find_history_file(folder):
             except OSError:
                 pass
         elif low.endswith(".html"):
-            # Quick sanity: contains a youtube watch URL
+            # Quick sanity: contains a youtube watch URL. Takeout's HTML
+            # exports embed a large chunk of boilerplate CSS/JS (~140KB in
+            # practice) before any real content, so this has to peek well
+            # past that rather than just the first couple KB.
             try:
                 with open(fpath, "r", encoding="utf-8", errors="ignore") as f:
-                    snippet = f.read(2048)
+                    snippet = f.read(400_000)
                 if "youtube.com/watch" in snippet:
                     return (fpath, "html")
             except OSError:
@@ -532,84 +564,276 @@ def extract_video_id(url):
     return m.group(1) if m else None
 
 
-class _HistoryHtmlParser(html.parser.HTMLParser):
-    """Extract video IDs from YouTube's watch-history HTML export."""
-    def __init__(self):
-        super().__init__()
-        self.video_ids = []
-        self._seen = set()
+# --- Timestamp parsing ---
 
-    def handle_starttag(self, tag, attrs):
-        if tag != "a":
-            return
-        for attr, value in attrs:
-            if attr == "href" and value:
-                vid = extract_video_id(value)
-                if vid and vid not in self._seen:
-                    self._seen.add(vid)
-                    self.video_ids.append(vid)
+# Central European timezone abbreviations, as used in German Takeout
+# exports ("24.07.2026, 13:47:51 MESZ"). Mapped to their UTC offset in
+# hours so the parsed datetime can be converted to real UTC.
+_TZ_OFFSETS_HOURS = {
+    "MEZ": 1, "MESZ": 2,    # German: Mitteleuropäische (Sommer)zeit
+    "CET": 1, "CEST": 2,    # English equivalents, in case they appear
+}
+
+
+def parse_takeout_timestamp(text):
+    """
+    Parse a Takeout activity timestamp into a naive UTC datetime, or None
+    if the format isn't recognised.
+
+    The German numeric format ("DD.MM.YYYY, HH:MM:SS TZ") is confirmed
+    against real exports. The English format is best-effort: Google's
+    English exports use a different layout, but we don't have a confirmed
+    real sample to verify against, so unrecognised text just falls back to
+    None rather than raising - callers should treat that as "unknown time"
+    and keep working rather than fail the whole import.
+    """
+    text = (text or "").strip()
+    if not text:
+        return None
+
+    # German numeric format: "24.07.2026, 13:47:51 MESZ"
+    m = re.match(
+        r"^(\d{1,2})\.(\d{1,2})\.(\d{4}),\s*(\d{1,2}):(\d{2}):(\d{2})\s*(\S+)?$",
+        text
+    )
+    if m:
+        day, month, year, hour, minute, second, tz = m.groups()
+        try:
+            dt = datetime(int(year), int(month), int(day), int(hour), int(minute), int(second))
+        except ValueError:
+            return None
+        offset = _TZ_OFFSETS_HOURS.get((tz or "").upper())
+        if offset is not None:
+            dt = dt - timedelta(hours=offset)
+        return dt
+
+    # Best-effort English formats — unverified against a real export.
+    cleaned = re.sub(r"\s+[A-Za-z]{2,5}([+-]\d{1,2}(:\d{2})?)?$", "", text).strip()
+    for fmt in (
+        "%b %d, %Y, %I:%M:%S %p",   # "Jul 24, 2026, 1:47:51 PM"
+        "%B %d, %Y, %I:%M:%S %p",   # "July 24, 2026, 1:47:51 PM"
+        "%d %b %Y, %H:%M:%S",       # "24 Jul 2026, 13:47:51"
+    ):
+        try:
+            return datetime.strptime(cleaned, fmt)
+        except ValueError:
+            continue
+
+    return None
+
+
+# --- Shared activity-entry extraction (used by watch history AND likes) ---
+
+# Matches the data-bearing content-cell of one Takeout activity entry (the
+# cell holding the title link, channel link, and timestamp), stopping right
+# before the adjacent (always-empty) "text-right" cell that follows it.
+_CONTENT_CELL_RE = re.compile(
+    r'content-cell mdl-cell mdl-cell--6-col mdl-typography--body-1">(.*?)'
+    r'</div><div class="content-cell mdl-cell mdl-cell--6-col mdl-typography--body-1 mdl-typography--text-right">',
+    re.DOTALL
+)
+_WATCH_LINK_RE = re.compile(
+    r'<a href="https://www\.youtube\.com/watch\?v=([a-zA-Z0-9_-]{11})"[^>]*>.*?</a>',
+    re.DOTALL
+)
+_TAG_RE = re.compile(r"<[^>]+>")
+
+
+def iter_activity_entries(html_text):
+    """
+    Yield {"video_id", "prefix", "suffix", "timestamp_text"} for every
+    Takeout activity entry referencing a YouTube watch link, regardless of
+    activity type (watched / liked / disliked / etc. — callers filter by
+    `prefix`/`suffix`).
+
+    `prefix` is the plain-text content before the link (e.g. German's
+    'Mit "Mag ich" bewertet: ' for a like) and `suffix` is the plain text
+    right after it (e.g. German's 'angesehen' for a watch). Works against
+    the single-file MyActivity / Wiedergabeverlauf HTML export.
+    """
+    for cell in _CONTENT_CELL_RE.findall(html_text):
+        link_match = _WATCH_LINK_RE.search(cell)
+        if not link_match:
+            continue
+
+        video_id = link_match.group(1)
+        prefix_html = cell[:link_match.start()]
+        rest = cell[link_match.end():]
+
+        suffix_match = re.match(r"(.*?)<br>", rest, re.DOTALL)
+        suffix_html = suffix_match.group(1) if suffix_match else ""
+
+        lines = [l for l in cell.split("<br>") if l.strip()]
+        timestamp_text = html.unescape(_TAG_RE.sub("", lines[-1])).strip() if lines else ""
+
+        yield {
+            "video_id": video_id,
+            "prefix": html.unescape(_TAG_RE.sub("", prefix_html)).strip(),
+            "suffix": html.unescape(_TAG_RE.sub("", suffix_html)).strip(),
+            "timestamp_text": timestamp_text,
+        }
+
+
+def _read_html_text(path):
+    """Read a (potentially large) Takeout HTML export fully into memory."""
+    with open(path, encoding="utf-8", errors="ignore") as f:
+        return f.read()
 
 
 def _parse_history_json(path):
-    """Parse English-style watch-history.json."""
+    """Parse English-style watch-history.json, including real timestamps."""
     with open(path, encoding="utf-8") as f:
         raw = json.load(f)
     seen = set()
-    ids = []
+    entries = []
     for item in raw:
         if item.get("header") != "YouTube":
             continue
         vid = extract_video_id(item.get("titleUrl", ""))
-        if vid and vid not in seen:
-            seen.add(vid)
-            ids.append(vid)
-    return ids
+        if not vid or vid in seen:
+            continue
+        seen.add(vid)
+        when = None
+        time_str = item.get("time")
+        if time_str:
+            try:
+                # Takeout JSON timestamps are ISO 8601, e.g.
+                # "2026-07-24T13:47:51.000Z". datetime.fromisoformat doesn't
+                # accept the trailing "Z" on Python < 3.11, so normalise it.
+                when = datetime.fromisoformat(time_str.replace("Z", "+00:00")).replace(tzinfo=None)
+            except ValueError:
+                when = None
+        entries.append({"video_id": vid, "watched_at": when})
+    return entries
 
 
 def _parse_history_html(path):
-    """Parse German-style Wiedergabeverlauf.html."""
-    parser = _HistoryHtmlParser()
-    with open(path, encoding="utf-8", errors="ignore") as f:
-        # Stream in chunks to handle large files without loading all into RAM
-        while True:
-            chunk = f.read(65536)
-            if not chunk:
-                break
-            parser.feed(chunk)
-    return parser.video_ids
+    """Parse watch-history HTML (English or German), including real timestamps."""
+    html_text = _read_html_text(path)
+    seen = set()
+    entries = []
+    for entry in iter_activity_entries(html_text):
+        vid = entry["video_id"]
+        if vid in seen:
+            continue
+        seen.add(vid)
+        entries.append({
+            "video_id": vid,
+            "watched_at": parse_takeout_timestamp(entry["timestamp_text"]),
+        })
+    return entries
 
 
-def import_history(yt_folder, base_url, token):
+# Suffix markers (the text right after the video link) that identify a
+# "watched" entry in a My Activity export, as opposed to a like/dislike/
+# subscribe/comment-reply entry mixed into the same file.
+_WATCHED_SUFFIX_MARKERS = [
+    "angesehen",                # German, confirmed
+    "als angesehen markiert",   # German "marked as watched" variant, confirmed present
+    "watched",                  # English, best-effort / unverified
+]
+
+
+def _parse_my_activity_watched(path):
+    """
+    Parse a My Activity HTML export for watched-video entries, to
+    supplement (not replace) the dedicated watch-history export - My
+    Activity's retention window doesn't fully overlap with it in either
+    direction, so combining both gives more complete coverage than either
+    alone.
+    """
+    html_text = _read_html_text(path)
+    seen = set()
+    entries = []
+    for entry in iter_activity_entries(html_text):
+        suffix = entry["suffix"].lower()
+        if not any(m in suffix for m in _WATCHED_SUFFIX_MARKERS):
+            continue
+        vid = entry["video_id"]
+        if vid in seen:
+            continue
+        seen.add(vid)
+        entries.append({
+            "video_id": vid,
+            "watched_at": parse_takeout_timestamp(entry["timestamp_text"]),
+        })
+    return entries
+
+
+def _merge_history_entries(*entry_lists):
+    """
+    Merge watch-history entries from multiple sources, deduping by
+    video_id. When a video appears in more than one source, the entry with
+    the more recent (or only) known timestamp wins - a raw list dedupe
+    would arbitrarily pick whichever source happened to be scanned first.
+    """
+    by_id = {}
+    for entries in entry_lists:
+        for entry in entries:
+            vid = entry["video_id"]
+            existing = by_id.get(vid)
+            if existing is None:
+                by_id[vid] = entry
+                continue
+            new_ts = entry["watched_at"]
+            old_ts = existing["watched_at"]
+            if new_ts is not None and (old_ts is None or new_ts > old_ts):
+                by_id[vid] = entry
+    return list(by_id.values())
+
+
+def import_history(yt_folder, takeout_root, base_url, token):
     result = find_history_file(yt_folder)
-    if not result:
-        print("  ✗ Could not find watch history file (looked for .json or .html with YouTube watch URLs).")
-        return
-
-    path, fmt = result
-    print(f"  Reading: {os.path.relpath(path, yt_folder)} ({fmt.upper()})", flush=True)
-
-    if fmt == "json":
-        entries = _parse_history_json(path)
+    dedicated_entries = []
+    if result:
+        path, fmt = result
+        print(f"  Reading: {os.path.relpath(path, yt_folder)} ({fmt.upper()})", flush=True)
+        dedicated_entries = _parse_history_json(path) if fmt == "json" else _parse_history_html(path)
     else:
-        entries = _parse_history_html(path)
+        print("  (No dedicated watch-history file found in the main export.)")
 
-    if not entries:
-        print("  No watch history entries found.")
+    activity_path = find_my_activity_file(takeout_root)
+    activity_entries = []
+    if activity_path:
+        print(f"  Reading: {os.path.relpath(activity_path, takeout_root)} (My Activity)", flush=True)
+        activity_entries = _parse_my_activity_watched(activity_path)
+
+    if not dedicated_entries and not activity_entries:
+        print("  ✗ Could not find watch history in either the main Takeout export or a")
+        print("    'My Activity' export (looked for .json/.html with YouTube watch URLs).")
         return
+
+    entries = _merge_history_entries(dedicated_entries, activity_entries)
+
+    # Sort oldest → newest by real watch date, so the backend's history
+    # list ends up in true chronological order rather than whatever order
+    # Takeout happened to list entries in (newest-first, by ID). Entries
+    # with no parseable timestamp sort to the front rather than being
+    # dropped or reordering everything else.
+    entries.sort(key=lambda e: e["watched_at"] or datetime.min)
+    undated = sum(1 for e in entries if e["watched_at"] is None)
 
     total = len(entries)
-    print(f"  Found {total} unique videos in watch history.")
+    print(f"  Found {total} unique videos "
+          f"({len(dedicated_entries)} from watch history, {len(activity_entries)} from My Activity, "
+          f"{total} after merging duplicates).")
+    if undated:
+        print(f"  Note: {undated} entries had no parseable timestamp and were placed first.")
     print("  Importing... (safe to Ctrl+C and re-run — duplicates are skipped)")
 
     added = skipped = errors = 0
-    for i, vid in enumerate(entries):
+    for i, entry in enumerate(entries):
+        vid = entry["video_id"]
         progress(i + 1, total, f"{added} added, {skipped} skipped")
+        body = {
+            "video_id": vid,
+            "progress_seconds": 0,
+            "completed": True,
+        }
+        if entry["watched_at"] is not None:
+            body["watched_at"] = entry["watched_at"].isoformat()
         try:
-            r = api_request(base_url, token, "POST", "/history/update", {
-                "video_id": vid,
-                "progress_seconds": 0,
-                "completed": True,
-            })
+            r = api_request(base_url, token, "POST", "/history/update", body)
             if isinstance(r, dict) and r.get("success"):
                 added += 1
             else:
@@ -622,7 +846,177 @@ def import_history(yt_folder, base_url, token):
 
     progress_done()
     print(f"  ✓ Added: {added}  Skipped (already exist): {skipped}  Errors: {errors}")
-    print("  Note: Takeout history has no progress data — all entries imported as 'completed'.")
+    if undated == total:
+        print("  Note: no timestamps could be parsed — all entries imported as 'completed' with no watch date.")
+
+
+# ---------------------------------------------------------------------------
+# Import: Liked Videos (via the separate "My Activity" Takeout export)
+# ---------------------------------------------------------------------------
+#
+# Takeout's "YouTube and YouTube Music" export does not include a Liked
+# Videos list. That data does exist in Google's records, though: it's in
+# the separate "My Activity" Takeout category, filtered to the YouTube
+# product, as "Mit \"Mag ich\" bewertet: <video>" (German) / "Liked video
+# <video>" (English) entries alongside watched/subscribed/etc. activity.
+#
+# The German phrasing is confirmed against a real export. The English
+# phrasing is a best-effort guess based on Google's documented title
+# pattern for this export ("Watched...", "Subscribed to...") — if it
+# doesn't match your export, please open an issue with the real wording
+# so it can be added.
+
+_LIKE_PREFIX_MARKERS = [
+    'mit "mag ich" bewertet',   # German, confirmed
+    "liked video",              # English, best-effort / unverified
+]
+_DISLIKE_PREFIX_MARKERS = [
+    'mit "mag ich nicht" bewertet',  # German, confirmed
+    "disliked video",               # English, best-effort / unverified
+]
+
+
+def _classify_rating(prefix):
+    low = prefix.lower()
+    if any(m in low for m in _DISLIKE_PREFIX_MARKERS):
+        return "dislike"
+    if any(m in low for m in _LIKE_PREFIX_MARKERS):
+        return "like"
+    return None
+
+
+def find_my_activity_file(takeout_root):
+    """
+    Locate the "My Activity" → YouTube export - a separate Takeout category
+    from "YouTube and YouTube Music", typically at
+    <root>/My Activity/YouTube/MyActivity.html.
+
+    Starts from folders that look like "My Activity" / "Meine Aktivitäten"
+    to avoid scanning an entire Takeout export (which can include large
+    media files), then content-sniffs for the rating-entry marker rather
+    than relying on an exact filename.
+    """
+    search_roots = []
+    for dirpath, dirnames, _ in os.walk(takeout_root):
+        depth = dirpath[len(takeout_root):].count(os.sep)
+        if depth >= 3:
+            dirnames[:] = []
+            continue
+        for d in dirnames:
+            if _looks_like_my_activity_folder(d):
+                search_roots.append(os.path.join(dirpath, d))
+
+    for root in search_roots or [takeout_root]:
+        for dirpath, _, filenames in os.walk(root):
+            for fname in filenames:
+                if not fname.lower().endswith((".html", ".htm")):
+                    continue
+                fpath = os.path.join(dirpath, fname)
+                try:
+                    with open(fpath, "rb") as f:
+                        head = f.read(400_000)
+                        if b"youtube.com/watch" not in head:
+                            continue
+                        # Rating entries can be sparse relative to watch
+                        # entries in a large activity export, so the
+                        # marker itself may sit well past any reasonable
+                        # peek size - read the rest of the file too.
+                        rest = f.read()
+                except OSError:
+                    continue
+                full_lower = (head + rest).lower()
+                if b"bewertet" in full_lower or b"liked video" in full_lower:
+                    return fpath
+    return None
+
+
+def _parse_my_activity_likes(path):
+    """
+    Parse a My Activity HTML export for Liked-video entries. Returns a list
+    of {"video_id", "added_at"} dicts, most-recent-like kept if a video was
+    liked more than once. Dislikes are detected but not imported anywhere
+    (there's no "Disliked Videos" concept in MyTube Sync) - only counted for
+    the summary printed to the user.
+    """
+    html_text = _read_html_text(path)
+    seen = set()
+    likes = []
+    dislike_count = 0
+    for entry in iter_activity_entries(html_text):
+        rating = _classify_rating(entry["prefix"])
+        if rating is None:
+            continue
+        vid = entry["video_id"]
+        if rating == "dislike":
+            dislike_count += 1
+            continue
+        if vid in seen:
+            continue
+        seen.add(vid)
+        likes.append({
+            "video_id": vid,
+            "added_at": parse_takeout_timestamp(entry["timestamp_text"]),
+        })
+    return likes, dislike_count
+
+
+def import_likes(takeout_root, base_url, token):
+    path = find_my_activity_file(takeout_root)
+    if not path:
+        print("  ✗ Could not find a 'My Activity' YouTube export (looked for a folder named")
+        print("    something like 'My Activity' containing an HTML file with rated-video entries).")
+        print("    This is a separate Takeout export from the main YouTube one - see README.")
+        return
+
+    print(f"  Reading: {os.path.relpath(path, takeout_root)}", flush=True)
+    likes, dislike_count = _parse_my_activity_likes(path)
+
+    if not likes:
+        print("  No liked-video entries found.")
+        return
+
+    # Oldest → newest, so the playlist ends up in the same chronological
+    # order the rest of the app already uses for playlists (position
+    # ascending = oldest added first).
+    likes.sort(key=lambda e: e["added_at"] or datetime.min)
+    undated = sum(1 for e in likes if e["added_at"] is None)
+
+    print(f"  Found {len(likes)} liked videos"
+          + (f" and {dislike_count} disliked videos (not imported)" if dislike_count else "")
+          + ".")
+    if undated:
+        print(f"  Note: {undated} entries had no parseable timestamp and were placed first.")
+
+    existing = api_request(base_url, token, "GET", "/playlists")
+    liked_playlist = next((p for p in existing if p["name"] == "Liked Videos"), None)
+    if liked_playlist:
+        playlist_id = liked_playlist["id"]
+    else:
+        result = api_request(base_url, token, "POST", "/playlists", {"name": "Liked Videos"})
+        playlist_id = result["data"]["id"]
+
+    total = len(likes)
+    added = skipped = errors = 0
+    for i, entry in enumerate(likes):
+        vid = entry["video_id"]
+        progress(i + 1, total, f"{added} added, {skipped} skipped")
+        body = {"video_id": vid}
+        if entry["added_at"] is not None:
+            body["added_at"] = entry["added_at"].isoformat()
+        try:
+            r = api_request(base_url, token, "POST", f"/playlists/{playlist_id}/add", body)
+            if isinstance(r, dict) and r.get("success"):
+                added += 1
+            else:
+                skipped += 1
+        except RuntimeError as e:
+            if "409" in str(e) or "already" in str(e).lower():
+                skipped += 1
+            else:
+                errors += 1
+
+    progress_done()
+    print(f"  ✓ Added: {added}  Skipped (already exist): {skipped}  Errors: {errors}")
 
 
 # ---------------------------------------------------------------------------
@@ -687,15 +1081,17 @@ def main():
     print("  [s] Subscriptions")
     print("  [p] Playlists")
     print("  [h] Watch history")
+    print("  [l] Liked videos (via a separate 'My Activity' Takeout export - see README)")
     print("  [a] All of the above")
     print()
-    choice = input("Choice (s/p/h/a): ").strip().lower()
+    choice = input("Choice (s/p/h/l/a): ").strip().lower()
 
     do_subs      = choice in ("s", "a")
     do_playlists = choice in ("p", "a")
     do_history   = choice in ("h", "a")
+    do_likes     = choice in ("l", "a")
 
-    if not (do_subs or do_playlists or do_history):
+    if not (do_subs or do_playlists or do_history or do_likes):
         print("Nothing selected, exiting.")
         sys.exit(0)
 
@@ -713,7 +1109,12 @@ def main():
 
     if do_history:
         print("── Watch History " + "─" * 42)
-        import_history(yt_folder, base_url, token)
+        import_history(yt_folder, takeout_root, base_url, token)
+        print()
+
+    if do_likes:
+        print("── Liked Videos " + "─" * 43)
+        import_likes(takeout_root, base_url, token)
         print()
 
     print("Done.")
