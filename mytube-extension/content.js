@@ -128,7 +128,7 @@
       saveMetadataCache();
       return meta;
     } catch (e) {
-      // Fallback - don't cache failures (so we retry later)
+      // Fallback - don't cache failures, so a retry happens next time
       return {
         title: `Video ${videoId}`,
         author: "Unknown",
@@ -151,10 +151,10 @@
     const track = appState.history.find(h => h.video_id === videoId);
     if (!track) return "";
     if (track.completed) {
-      return `<div class="mts-progress-badge mts-watched">${window.__mts.t("watched")}</div>`;
+      return `<div class="mts-progress-badge mts-watched"><span class="mts-icon-inline">${ICONS.check}</span> ${window.__mts.t("watched")}</div>`;
     }
     if (track.progress_seconds > 0) {
-      return `<div class="mts-progress-badge">${window.__mts.t("resumeAt", formatTimestamp(track.progress_seconds))}</div>`;
+      return `<div class="mts-progress-badge"><span class="mts-icon-inline">${ICONS.play}</span> ${window.__mts.t("resumeAt", formatTimestamp(track.progress_seconds))}</div>`;
     }
     return "";
   }
@@ -263,7 +263,11 @@
       renderActiveTab();
     }).catch(e => {
       console.error("MyTube Sync: feed failed", e);
-      appState.backendFeed = [];
+      // Don't clear appState.backendFeed here - a failed refresh attempt
+      // shouldn't throw away perfectly good previous data. The sync
+      // status indicator already communicates that this attempt failed;
+      // the user still gets to see their last known feed instead of a
+      // blank "no subscriptions" state that implies something it doesn't.
     });
 
     const results = await Promise.allSettled([subsDone, playlistsDone, historyDone, feedDone]);
@@ -392,9 +396,9 @@
   function getTabs() {
     const { t } = window.__mts;
     return [
-      { id: "subs",      label: t("tabSubscriptions"), icon: "📺" },
-      { id: "playlists", label: t("tabPlaylists"),     icon: "📂" },
-      { id: "history",   label: t("tabHistory"),       icon: "🕘" }
+      { id: "subs",      label: t("tabSubscriptions"), icon: ICONS.subscriptions },
+      { id: "playlists", label: t("tabPlaylists"),     icon: ICONS.playlists },
+      { id: "history",   label: t("tabHistory"),       icon: ICONS.history }
     ];
   }
 
@@ -408,7 +412,7 @@
     sidebar.innerHTML = `
       <div id="mts-header">
         <span><span class="mts-sync-dot"></span><span class="mts-user-label">${t("notConnected")}</span></span>
-        <button id="mts-reload-btn" title="${t("reloadTitle")}">⟳</button>
+        <button id="mts-reload-btn" title="${t("reloadTitle")}">${ICONS.refresh}</button>
       </div>
       <div id="mts-current-card" class="mts-empty"></div>
       <div id="mts-tabs">
@@ -541,7 +545,6 @@
     if (force) target.scrollTop = 0;
     target.dataset.renderedTab = tabId;
     target.dataset.renderedVer = ver;
-    target.innerHTML = `<div class="mts-empty-msg">${window.__mts.t("notConnectedMsg")}</div>`;
 
     if (tabId === "subs") {
       renderSubscriptionsTab(target);
@@ -579,12 +582,21 @@
       return db - da;
     });
 
+    // Channels whose RSS fetch genuinely failed (network hiccup, timeout,
+    // etc.) are distinct from channels that simply have no recent videos -
+    // silently treating them the same would hide real failures as if
+    // everything were just up to date.
+    const failedCount = appState.backendFeed.filter(f => f.ok === false).length;
+    const failedNotice = failedCount > 0
+      ? `<div class="mts-empty-msg mts-feed-warning">${window.__mts.t("someChannelsFailed", String(failedCount))}</div>`
+      : "";
+
     if (allVideos.length === 0) {
-      target.innerHTML = `<div class="mts-empty-msg">${window.__mts.t("noRecentUploads")}</div>`;
+      target.innerHTML = `<div class="mts-empty-msg">${window.__mts.t("noRecentUploads")}</div>${failedNotice}`;
       return;
     }
 
-    target.innerHTML = "";
+    target.innerHTML = failedNotice;
     for (const v of allVideos) {
       const meta = metadataCache[v.video_id] || { title: v.video_id, author: "", thumbnail: `https://img.youtube.com/vi/${v.video_id}/mqdefault.jpg` };
       const card = document.createElement("div");
@@ -616,7 +628,7 @@
     createRow.className = "mts-create-row";
     createRow.innerHTML = `
       <input type="text" class="mts-input" id="mts-new-playlist-name" placeholder="${window.__mts.t('newPlaylistPlaceholder')}">
-      <button class="mts-btn mts-btn-primary" data-action="create-playlist">${window.__mts.t("btnNewPlaylist")}</button>
+      <button class="mts-btn mts-btn-primary" data-action="create-playlist"><span class="mts-icon-inline">${ICONS.plus}</span> ${window.__mts.t("btnNewPlaylist")}</button>
     `;
     target.appendChild(createRow);
 
@@ -652,11 +664,14 @@
 
       const row = document.createElement("div");
       row.className = "mts-playlist-row";
+      const typeIcon = pl.name === SYS_LIKED ? ICONS.star
+        : pl.name === SYS_LATER ? ICONS.hourglass
+        : ICONS.folder;
       row.innerHTML = `
-        <span class="mts-playlist-name">${isSystem ? "⭐" : "📂"} ${escapeHtml(displayName)} ${isExpanded ? "▾" : "▸"}</span>
+        <span class="mts-playlist-name"><span class="mts-icon-inline">${typeIcon}</span> ${escapeHtml(displayName)} <span class="mts-icon-inline">${isExpanded ? ICONS.chevronDown : ICONS.chevronRight}</span></span>
         <span class="mts-playlist-row-right">
           <span class="mts-media-meta">${(appState.playlistContentsMap[pl.id] || []).length}</span>
-          ${!isSystem ? `<button class="mts-remove-btn" data-action="delete-playlist" title="${window.__mts.t("btnDeletePlaylist")}">🗑</button>` : ""}
+          ${!isSystem ? `<button class="mts-remove-btn" data-action="delete-playlist" title="${window.__mts.t("btnDeletePlaylist")}">${ICONS.trash}</button>` : ""}
         </span>
       `;
       row.querySelector(".mts-playlist-name").addEventListener("click", () => {
@@ -700,7 +715,7 @@
                   ${renderProgressBadge(item.video_id)}
                 </div>
                 <div style="text-align:right; margin-top:4px;">
-                  <button class="mts-remove-btn" data-pl="${pl.id}" data-vid="${item.video_id}">${window.__mts.t("btnDeletePlaylist")}</button>
+                  <button class="mts-remove-btn" data-pl="${pl.id}" data-vid="${item.video_id}" title="${window.__mts.t("btnDeletePlaylist")}">${ICONS.trash}</button>
                 </div>
               </div>
             `;
@@ -844,7 +859,7 @@
       }
       plSectionHtml = `
         <div class="mts-btn-row">
-          <button class="mts-btn" data-action="pl-section-toggle">${isExpanded ? window.__mts.t("btnAddToPlaylistOpen") : window.__mts.t("btnAddToPlaylist")}</button>
+          <button class="mts-btn" data-action="pl-section-toggle"><span class="mts-icon-inline">${isExpanded ? ICONS.chevronDown : ICONS.chevronRight}</span> ${window.__mts.t("btnAddToPlaylist")}</button>
         </div>
         <div class="mts-pl-checkbox-list" ${isExpanded ? "" : 'style="display:none;"'}>
           ${rows}
@@ -855,9 +870,9 @@
     return {
       html: `
         <div class="mts-btn-row">
-          <button class="mts-btn ${isLiked ? "mts-active" : ""}" data-action="like">${isLiked ? window.__mts.t("btnLiked") : window.__mts.t("btnLike")}</button>
-          <button class="mts-btn ${isLater ? "mts-active" : ""}" data-action="later">${isLater ? window.__mts.t("btnInWatchLater") : window.__mts.t("btnWatchLater")}</button>
-          <button class="mts-btn mts-danger ${isSubbed ? "mts-active" : ""}" data-action="sub">${isSubbed ? window.__mts.t("btnSubscribed") : window.__mts.t("btnSubscribe")}</button>
+          <button class="mts-btn ${isLiked ? "mts-active" : ""}" data-action="like"><span class="mts-icon-inline">${ICONS.heart}</span> ${isLiked ? window.__mts.t("btnLiked") : window.__mts.t("btnLike")}</button>
+          <button class="mts-btn ${isLater ? "mts-active" : ""}" data-action="later"><span class="mts-icon-inline">${ICONS.hourglass}</span> ${isLater ? window.__mts.t("btnInWatchLater") : window.__mts.t("btnWatchLater")}</button>
+          <button class="mts-btn mts-danger ${isSubbed ? "mts-active" : ""}" data-action="sub">${isSubbed ? `<span class="mts-icon-inline">${ICONS.check}</span> ${window.__mts.t("btnSubscribed")}` : `<span class="mts-icon-inline">${ICONS.plus}</span> ${window.__mts.t("btnSubscribe")}`}</button>
         </div>
         ${plSectionHtml}
       `,
@@ -942,7 +957,9 @@
       }
 
       const isSubbed = appState.subscriptions.some(s => s.channel_id.toLowerCase() === handle.toLowerCase());
-      const subLabel = isSubbed ? window.__mts.t("btnSubscribed") : window.__mts.t("btnSubscribe");
+      const subLabel = isSubbed
+        ? `<span class="mts-icon-inline">${ICONS.check}</span> ${window.__mts.t("btnSubscribed")}`
+        : `<span class="mts-icon-inline">${ICONS.plus}</span> ${window.__mts.t("btnSubscribe")}`;
       const btnHtml = `<button class="mts-btn mts-danger ${isSubbed ? "mts-active" : ""}" data-action="sub">${subLabel}</button>`;
 
       if (card) {
@@ -981,6 +998,28 @@
       "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;"
     })[c]);
   }
+
+  // Small self-contained inline SVG icon set - a consistent single-color
+  // line-icon style (currentColor stroke/fill, so each icon inherits
+  // whatever color its surrounding element already has) replacing the
+  // emoji previously used throughout the sidebar. No external icon font
+  // or network request needed, matching the rest of the extension.
+  const ICONS = {
+    subscriptions: `<svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="5" width="18" height="13" rx="2"/><polygon points="10,9 15,11.5 10,14" fill="currentColor" stroke="none"/></svg>`,
+    playlists: `<svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 6a1 1 0 0 1 1-1h5l2 2h9a1 1 0 0 1 1 1v10a1 1 0 0 1-1 1H4a1 1 0 0 1-1-1z"/></svg>`,
+    history: `<svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="9"/><polyline points="12,7 12,12 16,14"/></svg>`,
+    refresh: `<svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M4 12a8 8 0 0 1 14.5-4.7M20 12a8 8 0 0 1-14.5 4.7"/><polyline points="18.5,3 18.5,7.3 14.2,7.3"/><polyline points="5.5,21 5.5,16.7 9.8,16.7"/></svg>`,
+    star: `<svg viewBox="0 0 24 24" width="13" height="13" fill="currentColor" stroke="none"><polygon points="12,2 15,9 22,9.3 16.5,14 18.5,21 12,17 5.5,21 7.5,14 2,9.3 9,9"/></svg>`,
+    hourglass: `<svg viewBox="0 0 24 24" width="13" height="13" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M6 2h12M6 22h12M6 2c0 5 4 7 6 8-2 1-6 3-6 8M18 2c0 5-4 7-6 8 2 1 6 3 6 8"/></svg>`,
+    folder: `<svg viewBox="0 0 24 24" width="13" height="13" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 6a1 1 0 0 1 1-1h5l2 2h9a1 1 0 0 1 1 1v10a1 1 0 0 1-1 1H4a1 1 0 0 1-1-1z"/></svg>`,
+    trash: `<svg viewBox="0 0 24 24" width="13" height="13" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="4,7 20,7"/><path d="M6 7V5a1 1 0 0 1 1-1h10a1 1 0 0 1 1 1v2M8 7v12a1 1 0 0 0 1 1h6a1 1 0 0 0 1-1V7"/><line x1="10" y1="11" x2="10" y2="17"/><line x1="14" y1="11" x2="14" y2="17"/></svg>`,
+    chevronDown: `<svg viewBox="0 0 24 24" width="12" height="12" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="6,9 12,15 18,9"/></svg>`,
+    chevronRight: `<svg viewBox="0 0 24 24" width="12" height="12" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="9,6 15,12 9,18"/></svg>`,
+    heart: `<svg viewBox="0 0 24 24" width="13" height="13" fill="currentColor" stroke="none"><path d="M12 21s-7-4.5-9.5-9A5.5 5.5 0 0 1 12 6a5.5 5.5 0 0 1 9.5 6c-2.5 4.5-9.5 9-9.5 9z"/></svg>`,
+    check: `<svg viewBox="0 0 24 24" width="13" height="13" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="4,12 9,17 20,6"/></svg>`,
+    plus: `<svg viewBox="0 0 24 24" width="12" height="12" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/></svg>`,
+    play: `<svg viewBox="0 0 24 24" width="10" height="10" fill="currentColor" stroke="none"><polygon points="6,4 20,12 6,20"/></svg>`,
+  };
 
   // Expose
   window.__mts = Object.assign(window.__mts, {

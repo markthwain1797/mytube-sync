@@ -1,4 +1,5 @@
 import os
+import asyncio
 import urllib.request
 import xml.etree.ElementTree as ET
 import re
@@ -9,7 +10,7 @@ from datetime import datetime
 
 from fastapi import FastAPI, Depends, HTTPException, Header
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import HTMLResponse
+from fastapi.responses import HTMLResponse, JSONResponse
 from sqlalchemy.orm import Session
 from typing import Optional, List
 from pydantic import BaseModel
@@ -44,6 +45,19 @@ logging.basicConfig(
 )
 
 logger = logging.getLogger("mytube")
+
+
+@app.exception_handler(Exception)
+async def log_unhandled_exception(request, exc):
+    # Without this, an unhandled error just becomes a bare 500 with nothing
+    # obvious to grep for - this guarantees every unexpected failure shows
+    # up in the server's own logs with a full traceback and the request
+    # that triggered it, so a report like "GET /playlists/4 -> HTTP 500"
+    # can actually be tracked down instead of being a dead end.
+    logger.error(f"Unhandled exception on {request.method} {request.url.path}")
+    logger.error(traceback.format_exc())
+    return JSONResponse(status_code=500, content={"detail": "Internal server error"})
+
 
 # =========================
 # Pydantic Schemas
@@ -181,7 +195,7 @@ def delete_subscription(
 
 def fetch_youtube_rss_videos(channel_id: str, limit: int = 5):
     channel_id = channel_id.strip()
-    
+
     if channel_id.startswith("@"):
         try:
             profile_url = f"https://www.youtube.com/{channel_id}"
@@ -189,7 +203,7 @@ def fetch_youtube_rss_videos(channel_id: str, limit: int = 5):
                 profile_url, 
                 headers={'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'}
             )
-            with urllib.request.urlopen(req, timeout=5) as response:
+            with urllib.request.urlopen(req, timeout=8) as response:
                 html_content = response.read().decode('utf-8', errors='ignore')
                 
                 match = re.search(r'meta itemprop="channelId" content="(UC[^"]+)"', html_content)
@@ -217,7 +231,7 @@ def fetch_youtube_rss_videos(channel_id: str, limit: int = 5):
             url, 
             headers={'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64)'}
         )
-        with urllib.request.urlopen(req, timeout=5) as response:
+        with urllib.request.urlopen(req, timeout=8) as response:
             xml_data = response.read()
             
         root = ET.fromstring(xml_data)
@@ -237,13 +251,16 @@ def fetch_youtube_rss_videos(channel_id: str, limit: int = 5):
                     "link": f"https://www.youtube.com/watch?v={video_id.text}",
                     "published": published.text if published is not None else None
                 })
-        return videos
+        return {"videos": videos, "ok": True}
     except Exception as e:
         logger.error(
             f"RSS fetch failed for {channel_id}: {e}"
         )
         logger.error(traceback.format_exc())
-        return []
+        # Distinguish "the fetch itself failed" from "this channel really
+        # has no videos" - the caller/frontend needs this to avoid silently
+        # showing an empty feed as if it were simply up to date.
+        return {"videos": [], "ok": False}
 
 
 @app.get("/subscriptions/feed")
@@ -252,16 +269,31 @@ async def get_subscription_feed(
     user: models.User = Depends(get_current_user)
 ):
     subscriptions = db.query(models.Subscription).filter_by(user_id=user.id).all()
-    
-    feed_data = []
-    for subscription in subscriptions:
-        latest_videos = fetch_youtube_rss_videos(subscription.channel_id, limit=15)
-        feed_data.append({
-            "channel_id": subscription.channel_id,
-            "videos": latest_videos
-        })
-        
-    return feed_data
+
+    # fetch_youtube_rss_videos does blocking network I/O (urllib), so each
+    # call MUST run in a thread pool rather than directly on the event
+    # loop. Calling it directly here (as a plain sequential loop, which is
+    # what this used to do) would freeze the entire event loop - and with
+    # it, every other request this server is handling, including unrelated
+    # ones like fetching a playlist - for the full duration of every RSS
+    # fetch, one channel at a time. Running them concurrently via a thread
+    # pool fixes both the server-wide stalling and the per-channel latency
+    # that comes from being stuck behind everything fetched before it.
+    loop = asyncio.get_event_loop()
+    tasks = [
+        loop.run_in_executor(None, fetch_youtube_rss_videos, sub.channel_id, 15)
+        for sub in subscriptions
+    ]
+    results = await asyncio.gather(*tasks)
+
+    return [
+        {
+            "channel_id": sub.channel_id,
+            "videos": result["videos"],
+            "ok": result["ok"],
+        }
+        for sub, result in zip(subscriptions, results)
+    ]
 
 
 # =========================
@@ -547,8 +579,8 @@ def create_user(
     ).first()
 
     if existing:
-        # Existing users keep their original token; we don't have it here
-        # (it's not re-derivable), so we signal this explicitly rather than
+        # Existing users keep their original token; it isn't available here
+        # (not re-derivable), so this is signaled explicitly rather than
         # returning a different response shape than the "created" case.
         return {
             "success": False,

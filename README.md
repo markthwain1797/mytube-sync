@@ -172,11 +172,11 @@ a signed install for daily use (see below).
 
 ### Install permanently — desktop
 
-A signed build is included in this repo as `mytube_sync-1.0.0.xpi`.
+A signed build is included in this repo as `mytube_sync-x.0.0.xpi`.
 
 1. In Firefox, go to `about:addons`
 2. Gear icon → "Install Add-on From File"
-3. Select `mytube_sync-1.0.0.xpi`
+3. Select `mytube_sync-x.0.0.xpi`
 
 If you've modified the code and need a new signed build, see [Sign it yourself](#sign-it-yourself) below.
 
@@ -193,7 +193,7 @@ Firefox Nightly has a developer mode that allows installing any signed `.xpi` di
 2. Open Nightly → Settings → About Firefox Nightly → tap the Firefox logo **5 times**
    until "Debug menu enabled" appears
 3. Go back to Settings → Install Extension from File
-4. Transfer `mytube_sync-1.0.0.xpi` to the phone (USB, cloud storage, email attachment)
+4. Transfer `mytube_sync-x.0.0.xpi` to the phone (USB, cloud storage, email attachment)
    and select it
 
 This only works in Nightly, not regular Firefox for Android.
@@ -306,20 +306,18 @@ so German, English, and other Takeout exports are all handled the same way.
   in either direction, so combining both gives noticeably more complete coverage than
   either alone. Duplicates between the two sources are merged by video, keeping whichever
   timestamp is more recent. Every entry carries its real per-entry timestamp, which is
-  used for correct chronological ordering — history is *not* just imported in file order.
-  Takeout has no watch-progress data, so all entries are imported as "completed"
-  regardless of how much was actually watched.
+  used for correct chronological ordering. Takeout has no watch-progress data, so all
+  entries are imported as "completed" regardless of how much was actually watched.
 - **Liked videos:** Takeout's "YouTube and YouTube Music" export does not include a Liked
-  Videos list — that's a Google limitation, not something this importer can work around
-  within that export. The data does exist in your Google account, though: it's recorded in
-  the separate **My Activity** export (filtered to YouTube) as individual "rated a video"
+  Videos list. The data does exist in your Google account, though: it's recorded in the
+  separate **My Activity** export (filtered to YouTube) as individual "rated a video"
   activity entries, each with a real timestamp. The importer detects and imports these,
   populating the Liked Videos system playlist in correct chronological order. Disliked
   videos are also detected in the same export but not imported anywhere, since there's no
   "Disliked Videos" concept in MyTube Sync — they're only counted in the summary.
   German-language exports are confirmed working; the English wording used to detect a
   "liked" or "watched" entry is a best-effort guess, since no real English export was
-  available to verify against — if detection doesn't work on your export, please open an
+  available to verify against — if detection doesn't work on your export, you can open an
   issue with the exact wording it uses.
 
 ---
@@ -347,14 +345,15 @@ so German, English, and other Takeout exports are all handled the same way.
   depends on internal state and click handling that isn't exposed. A full reload is slower
   than an in-app transition but not broken — playback, history logging, and everything else
   pick back up normally afterward.
-- **YouTube can't be installed as a real standalone app on Android**: unlike YouTube Music,
-  the main YouTube site's manifest doesn't meet Firefox's installability criteria. The most
-  likely gap — a missing 512px icon with `purpose: "any"`, found by comparing YouTube's
-  manifest against YouTube Music's working one — was patched in-flight via
-  `webRequest.filterResponseData` as an experiment, but it didn't resolve the issue,
-  meaning some other requirement is involved. Not currently pursued further, given the cost
-  of carrying the broader `webRequest`/`webRequestBlocking` permissions for no confirmed
-  benefit.
+- **YouTube can't be installed as a real standalone app on Android in a usual way** but
+  there's a workaround.* Requesting the desktop site (not just typing "youtube.com" on 
+  mobile, but actually selecting "Desktop site" from the browser's page menu) serves a 
+  different manifest that *does* pass Firefox's installability check, and installs as a real
+  standalone app. Once installed, opening it later auto-redirects to `m.youtube.com` for
+  the actual mobile-friendly UI, but stays inside the installed PWA shell rather than
+  reverting to a normal browser tab — so you get the real app experience (own icon, own
+  task-switcher entry, no browser chrome) with the UI you'd actually want to use day to
+  day.
 
 ---
 

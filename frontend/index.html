@@ -233,7 +233,7 @@ body {
 <body>
 
 <div id="topbar">
-  <h1>🎬 MyTube Sync</h1>
+  <h1><svg viewBox="0 0 24 24" width="22" height="22" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="vertical-align:-4px"><rect x="3" y="3" width="18" height="18" rx="4"/><polygon points="10,8 16,12 10,16" fill="currentColor" stroke="none"/></svg> MyTube Sync</h1>
   <input id="inp-token" type="password" placeholder="API token — press Enter to connect">
   <button id="btn-connect">Connect</button>
   <span id="conn-status">Not connected</span>
@@ -286,7 +286,7 @@ body {
 
 <div id="logbar">
   <span id="log-text">—</span>
-  <button id="refresh-btn" title="Refresh now">↻ Refresh</button>
+  <button id="refresh-btn" title="Refresh now"><svg viewBox="0 0 24 24" width="13" height="13" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="vertical-align:-2px"><path d="M4 12a8 8 0 0 1 14.5-4.7M20 12a8 8 0 0 1-14.5 4.7"/><polyline points="18.5,3 18.5,7.3 14.2,7.3"/><polyline points="5.5,21 5.5,16.7 9.8,16.7"/></svg> Refresh</button>
   <span id="refresh-countdown"></span>
 </div>
 
@@ -385,6 +385,17 @@ function esc(s) {
     ({ "&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;" })[c]);
 }
 
+// Small self-contained inline SVG icon set - matches the browser
+// extension's icon style (currentColor stroke/fill so each icon inherits
+// its surrounding element's color) rather than emoji.
+const ICONS = {
+  star: `<svg viewBox="0 0 24 24" width="13" height="13" fill="currentColor" stroke="none" style="vertical-align:-2px"><polygon points="12,2 15,9 22,9.3 16.5,14 18.5,21 12,17 5.5,21 7.5,14 2,9.3 9,9"/></svg>`,
+  hourglass: `<svg viewBox="0 0 24 24" width="13" height="13" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="vertical-align:-2px"><path d="M6 2h12M6 22h12M6 2c0 5 4 7 6 8-2 1-6 3-6 8M18 2c0 5-4 7-6 8 2 1 6 3 6 8"/></svg>`,
+  folder: `<svg viewBox="0 0 24 24" width="13" height="13" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="vertical-align:-2px"><path d="M3 6a1 1 0 0 1 1-1h5l2 2h9a1 1 0 0 1 1 1v10a1 1 0 0 1-1 1H4a1 1 0 0 1-1-1z"/></svg>`,
+  heart: `<svg viewBox="0 0 24 24" width="13" height="13" fill="currentColor" stroke="none" style="vertical-align:-2px"><path d="M12 21s-7-4.5-9.5-9A5.5 5.5 0 0 1 12 6a5.5 5.5 0 0 1 9.5 6c-2.5 4.5-9.5 9-9.5 9z"/></svg>`,
+  check: `<svg viewBox="0 0 24 24" width="13" height="13" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="vertical-align:-2px"><polyline points="4,12 9,17 20,6"/></svg>`,
+};
+
 function watchLink(videoId) {
   const h = S.history.find(x => x.video_id === videoId);
   return `https://www.youtube.com/watch?v=${videoId}${
@@ -419,7 +430,7 @@ async function connect() {
   log("Connecting…");
   try {
     const user = await api("/current_user");
-    status.textContent = `✓ ${user.name}`; status.className = "ok";
+    status.innerHTML = `${ICONS.check} ${esc(user.name)}`; status.className = "ok";
     S.connected = true;
     log(`Connected as ${user.name}`, "ok");
     document.getElementById("pl-body").innerHTML   = `<p class="empty">Loading…</p>`;
@@ -437,6 +448,25 @@ async function syncAll() {
   log("Syncing…");
   _histObs = null;  // reset history observer on each full sync
 
+  // Track per-branch outcomes so one branch's error can't be silently
+  // erased by another branch's success message. Previously every branch
+  // replaced the single status line unconditionally - e.g. a Playlists
+  // error would vanish the instant the Feed request finished, making it
+  // look like everything was fine.
+  const branchErrors = {};
+  let settledCount = 0;
+
+  function reportError(name, msg) {
+    branchErrors[name] = msg;
+    log(Object.entries(branchErrors).map(([n, m]) => `${n}: ${m}`).join("  •  "), "err");
+  }
+  function settle() {
+    settledCount++;
+    if (settledCount === 4 && Object.keys(branchErrors).length === 0) {
+      log("Ready", "ok");
+    }
+  }
+
   // Fire everything simultaneously — each branch renders as soon as its own
   // data arrives, completely independent of the other columns.
   try {
@@ -445,7 +475,7 @@ async function syncAll() {
     api("/subscriptions").then(subs => {
       S.subs = subs;
       renderSubs();
-    }).catch(e => log("Subs error: " + e.message, "err"));
+    }).catch(e => reportError("Subs", e.message)).finally(settle);
 
     // ── Playlists ─────────────────────────────────────────────────
     api("/playlists").then(async playlists => {
@@ -457,7 +487,7 @@ async function syncAll() {
       const ids = Object.values(S.plContents).flat().map(i => i.video_id);
       await prefetchMeta([...new Set(ids)]);
       renderPlaylists();
-    }).catch(e => log("Playlists error: " + e.message, "err"));
+    }).catch(e => reportError("Playlists", e.message)).finally(settle);
 
     // ── History (streams cards top-to-bottom) ─────────────────────
     const HIST_PAGE = 250;
@@ -470,7 +500,7 @@ async function syncAll() {
       document.getElementById("hist-meta").textContent = `${S.history.length}${S.historyExhausted ? "" : "+"}`;
       document.getElementById("hist-body").innerHTML = "";
       streamHistory(S.history, !S.historyExhausted);
-    }).catch(e => log("History error: " + e.message, "err"));
+    }).catch(e => reportError("History", e.message)).finally(settle);
 
     // ── Subscription feed (updates subs column when ready) ────────
     api("/subscriptions/feed").then(async feed => {
@@ -478,8 +508,7 @@ async function syncAll() {
       const ids = feed.flatMap(ch => (ch.videos || []).map(v => v.video_id));
       await prefetchMeta([...new Set(ids)]);
       renderSubs();
-      log("Ready", "ok");
-    }).catch(e => log("Feed error: " + e.message, "err"));
+    }).catch(e => reportError("Feed", e.message)).finally(settle);
 
   } catch (e) {
     log(e.message, "err");
@@ -501,7 +530,7 @@ function renderPlaylists() {
     const sys = pl.name === SYS_LIKED || pl.name === SYS_LATER;
     const cnt = (S.plContents[pl.id] || []).length;
     const sel = S.activePl === pl.id ? " selected" : "";
-    const icon = pl.name === SYS_LIKED ? "⭐" : pl.name === SYS_LATER ? "⏳" : "📂";
+    const icon = pl.name === SYS_LIKED ? ICONS.star : pl.name === SYS_LATER ? ICONS.hourglass : ICONS.folder;
     const del = sys ? "" : `<button class="btn btn-danger" onclick="deletePl(${pl.id})">Del</button>`;
     html += `<div class="pl-row${sel}" onclick="selectPl(${pl.id})">
       <span class="pl-name">${icon} ${esc(pl.name)}</span>
@@ -566,20 +595,6 @@ async function removePlItem(plId, videoId) {
 }
 
 // ── History column ───────────────────────────────────────────────
-function renderHistory() {
-  // Called on re-renders (e.g. after marking watched) — rebuild from cache
-  const body = document.getElementById("hist-body");
-  document.getElementById("hist-meta").textContent = `${S.history.length}`;
-  if (!S.history.length) {
-    body.innerHTML = `<p class="empty">${S.connected ? "Loading…" : "Connect to load."}</p>`;
-    return;
-  }
-  body.innerHTML = S.history.map(h => {
-    const m = metaCache[h.video_id] || { title: h.video_id, author: "", thumb: `https://img.youtube.com/vi/${h.video_id}/mqdefault.jpg` };
-    return mediaCard(h.video_id, m);
-  }).join("");
-}
-
 // ── History observer (one instance, reused across load-more calls) ──
 let _histObs = null;
 
@@ -687,12 +702,15 @@ function renderSubs() {
       const m = metaCache[v.video_id] || { title: v.video_id, author: ch.channel_id, thumb: `https://img.youtube.com/vi/${v.video_id}/mqdefault.jpg` };
       return mediaCard(v.video_id, m);
     }).join("");
+    const emptyMsg = ch.ok === false
+      ? `<p class="empty" style="color:#b45309">⚠ Couldn't check this channel just now (network issue) - will retry automatically.</p>`
+      : `<p class="empty">No recent uploads.</p>`;
     html += `<div class="ch-block">
       <div class="ch-head">
         <span class="ch-name">${esc(ch.channel_id)}</span>
         <button class="btn btn-danger" onclick="unsub('${esc(ch.channel_id)}')">Unsub</button>
       </div>
-      ${vids || `<p class="empty">No recent uploads.</p>`}
+      ${vids || emptyMsg}
     </div>`;
   }
   body.innerHTML = html;
@@ -730,14 +748,14 @@ async function handleSearch() {
     const btns = [
       isSubbed
         ? btn("Unsub", "danger",  () => unsub(m.handle))
-        : btn("Subscribe", "teal", () => sub(m.handle || m.author)),
+        : btn(`${ICONS.plus} Subscribe`, "teal", () => sub(m.handle || m.author)),
       plLiked ? (isLiked
         ? btn("Unlike",    "danger",  () => plToggle(videoId, plLiked.id, true))
-        : btn("👍 Like",   "ghost",   () => plToggle(videoId, plLiked.id, false))) : null,
+        : btn(`${ICONS.heart} Like`,   "ghost",   () => plToggle(videoId, plLiked.id, false))) : null,
       plLater ? (isLater
-        ? btn("Remove ⏳", "danger",  () => plToggle(videoId, plLater.id, true))
-        : btn("⏳ Later",  "ghost",   () => plToggle(videoId, plLater.id, false))) : null,
-      btn("✓ Watched",  "ghost",   () => markDone(videoId)),
+        ? btn(`Remove ${ICONS.hourglass}`, "danger",  () => plToggle(videoId, plLater.id, true))
+        : btn(`${ICONS.hourglass} Later`,  "ghost",   () => plToggle(videoId, plLater.id, false))) : null,
+      btn(`${ICONS.check} Watched`,  "ghost",   () => markDone(videoId)),
     ].filter(Boolean);
 
     panel.innerHTML = `<span style="font-size:11px;color:var(--text);max-width:200px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${esc(m.title)}</span>`;
@@ -747,14 +765,14 @@ async function handleSearch() {
     const isSubbed = S.subs.some(s => s.channel_id.toLowerCase() === handle.toLowerCase());
     panel.appendChild(isSubbed
       ? btn("Unsub", "danger", () => unsub(handle))
-      : btn("Subscribe", "teal", () => sub(handle)));
+      : btn(`${ICONS.plus} Subscribe`, "teal", () => sub(handle)));
   }
 }
 
 function btn(label, cls, fn) {
   const b = document.createElement("button");
   b.className = `btn btn-${cls}`;
-  b.textContent = label;
+  b.innerHTML = label;
   b.addEventListener("click", async () => {
     b.disabled = true;
     await fn();

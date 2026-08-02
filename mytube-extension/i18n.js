@@ -35,7 +35,7 @@
     const preferred = stored.lang || browserLang();
     activeLang = SUPPORTED.includes(preferred) ? preferred : DEFAULT_LOCALE;
 
-    // Always load messages manually so we're not at the mercy of browser.i18n's
+    // Always load messages manually to avoid depending on browser.i18n's
     // own locale detection (which can't be overridden at runtime).
     activeMessages = await loadLocale(activeLang);
     if (!activeMessages) {

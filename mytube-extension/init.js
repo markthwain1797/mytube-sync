@@ -15,8 +15,8 @@
   let trackedVideoEl = null;
 
   // YouTube serves a responsive www.youtube.com to most mobile browsers
-  // nowadays (m.youtube.com is no longer guaranteed), so we can't rely on
-  // hostname alone. Match it against the same breakpoint our CSS uses.
+  // nowadays (m.youtube.com is no longer guaranteed), so hostname alone
+  // isn't reliable. Matches the same breakpoint my CSS uses.
   function isMobileSite() {
     if (location.hostname === "m.youtube.com") return true;
     return window.matchMedia("(max-width: 900px), (pointer: coarse)").matches;
@@ -25,7 +25,7 @@
   // ---------- Sidebar collapse to icons-only ----------
   // YouTube toggles a `guide-state` attribute on <ytd-app> and stores a
   // preference; clicking the native "guide" (hamburger) button toggles
-  // between full / mini / hidden. We aim for the mini ("collapsed") state.
+  // between full / mini / hidden. The mini ("collapsed") state is the goal.
   function collapseGuideToMini() {
     const ytdApp = document.querySelector("ytd-app");
     if (!ytdApp) return;
@@ -43,10 +43,10 @@
 
   // ---------- YouTube's own mobile bottom nav offset ----------
   // YouTube's responsive web layout renders its own fixed bottom nav bar
-  // (Home/Shorts/Subscriptions/You). We must stack our bar above it rather
+  // (Home/Shorts/Subscriptions/You). My bar must stack above it rather
   // than assuming bottom:0, or the two overlap. The exact element varies
-  // by YouTube's current build, so we try a few known candidates and fall
-  // back to 0 if none are found (our bar then sits at the true bottom).
+  // by YouTube's current build, so I try a few known candidates and fall
+  // back to 0 if none are found (my bar then sits at the true bottom).
   const YT_BOTTOM_NAV_SELECTORS = [
     "ytm-bottom-bar-layout",          // current YouTube mobile (2024+)
     "ytm-pivot-bar-renderer",         // older YouTube mobile
@@ -97,18 +97,39 @@
 
   function syncYtBottomNavOffset() {
     const height = getYtBottomNavHeight(true);
-    // Only write the var once we have a real measurement; the CSS default
+    // Only write the var once there's a real measurement; the CSS default
     // keeps the bar safe until then.
     if (height > 0) {
       document.documentElement.style.setProperty("--mts-yt-bottom-nav-height", `${height}px`);
     }
   }
 
-  // On /watch pages YouTube hides its own bottom nav — our bar should sit at
-  // the true bottom (0). On all other pages we use a safe 56px default while
+  // Once YouTube's nav bar has been found at least once, keep tracking it
+  // continuously and cheaply (fast named selectors only, never the
+  // expensive full-DOM fallback scan) rather than measuring once and
+  // stopping. YouTube can hide its own nav bar mid-session without a full
+  // navigation - e.g. scrolling a video into the small-player layout - and
+  // without this, my bar would keep reserving space for a nav bar that's
+  // no longer there instead of dropping down to reclaim it.
+  let _navHeightPollInterval = null;
+
+  function _startNavHeightPolling() {
+    if (_navHeightPollInterval) return;
+    _navHeightPollInterval = setInterval(() => {
+      const height = getYtBottomNavHeight(false);
+      document.documentElement.style.setProperty("--mts-yt-bottom-nav-height", `${height}px`);
+    }, 800);
+  }
+
+  // On /watch pages YouTube hides its own bottom nav — my bar should sit at
+  // the true bottom (0). On all other pages I use a safe 56px default while
   // waiting for the nav to render, then refine with the real measurement.
+  // The extra safe-area-inset padding hedges against devices with a gesture
+  // navigation bar, where 56px alone can undershoot the real inset.
   function getNavDefault() {
-    return location.pathname.startsWith("/watch") ? "0px" : "56px";
+    return location.pathname.startsWith("/watch")
+      ? "0px"
+      : "calc(56px + env(safe-area-inset-bottom, 0px))";
   }
 
   // Single module-level observer/frame handle so that back-to-back
@@ -136,6 +157,7 @@
     const height = getYtBottomNavHeight(true);
     if (height > 0) {
       document.documentElement.style.setProperty("--mts-yt-bottom-nav-height", `${height}px`);
+      _startNavHeightPolling();
       return;
     }
 
@@ -155,6 +177,7 @@
         document.documentElement.style.setProperty("--mts-yt-bottom-nav-height", `${h}px`);
         obs.disconnect();
         if (_navHeightObs === obs) _navHeightObs = null;
+        _startNavHeightPolling();
       }
     };
 
@@ -174,8 +197,8 @@
   }
 
   // ---------- Shorts handling ----------
-  // /shorts/ is a full-bleed vertical video; our floating mobile bars would
-  // cover part of it, so we hide them entirely while on a Shorts page.
+  // /shorts/ is a full-bleed vertical video; my floating mobile bars would
+  // cover part of it, so I hide them entirely while on a Shorts page.
   function updateShortsState() {
     const isShorts = location.pathname.startsWith("/shorts/");
     document.documentElement.setAttribute("mts-shorts", isShorts ? "1" : "0");
@@ -269,7 +292,7 @@
       trackedVideoEl.removeEventListener("ended", sendCompletedUpdate);
       trackedVideoEl.removeEventListener("seeked", sendHistoryUpdate);
     }
-    // Send a final update for the video we're leaving
+    // Send a final update for the video being left
     if (trackedVideoId && trackedVideoEl) {
       sendHistoryUpdate();
     }
@@ -283,7 +306,20 @@
 
     const progress = Math.floor(trackedVideoEl.currentTime || 0);
     const duration = trackedVideoEl.duration || 0;
-    const completed = duration > 0 && progress >= duration - 2;
+    const watchedFraction = duration > 0 ? progress / duration : 0;
+
+    // Shorts are routinely scrolled past in a couple of seconds as part of
+    // normal browsing - recording every brief glance would flood history
+    // with things never really "watched". Regular videos are a deliberate
+    // open, so even a short watch is worth keeping as resume progress -
+    // this guard is Shorts-only.
+    if (duration > 0 && watchedFraction < 0.10 && location.pathname.startsWith("/shorts/")) {
+      return;
+    }
+
+    // A few seconds of credits/outro left shouldn't keep a video sitting
+    // at "in progress" forever - close enough to the end counts as done.
+    const completed = duration > 0 && watchedFraction >= 0.90;
 
     window.__mts.updateHistoryState(trackedVideoId, progress, completed);
   }
@@ -294,9 +330,25 @@
     window.__mts.updateHistoryState(trackedVideoId, progress, true);
   }
 
-  // ---------- Visibility / unload: flush final progress ----------
+  // ---------- Visibility: flush progress on hide, resync on return ----------
+  let _lastSyncAttemptAt = 0;
+
   document.addEventListener("visibilitychange", () => {
-    if (document.visibilityState === "hidden") sendHistoryUpdate();
+    if (document.visibilityState === "hidden") {
+      sendHistoryUpdate();
+      return;
+    }
+    // Mobile browsers throttle (or fully pause) background-tab network
+    // activity, so a sync that was still in flight when the tab got
+    // backgrounded can stall indefinitely instead of completing - nothing
+    // previously re-triggered it on return, leaving stale/incomplete data
+    // until the user noticed and manually hit reload. Debounced to avoid
+    // re-syncing on every brief glance away and back.
+    const now = Date.now();
+    if (now - _lastSyncAttemptAt > 15000) {
+      _lastSyncAttemptAt = now;
+      window.__mts.syncAllState();
+    }
   });
   window.addEventListener("beforeunload", () => {
     sendHistoryUpdate();
@@ -363,6 +415,7 @@
     }
 
     window.__mts.updateSyncIndicators();
+    _lastSyncAttemptAt = Date.now();
     await window.__mts.syncAllState();
 
     // Set nav offset: waitForYtNavAndSync sets the page-type default immediately,
@@ -380,6 +433,7 @@
     // history/RSS feeds for a tab nobody is looking at.
     setInterval(() => {
       if (document.visibilityState === "hidden") return;
+      _lastSyncAttemptAt = Date.now();
       window.__mts.syncAllState();
     }, 5 * 60 * 1000);
   });

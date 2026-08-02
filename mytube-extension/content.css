@@ -40,18 +40,23 @@
   flex-direction: column;
 }
 
-#mts-sidebar.mts-hidden {
-  display: none;
-}
-
-/* Push YouTube's page content to the right so nothing is hidden */
+/* Push YouTube's page content to the right so nothing is hidden.
+   Both margin-left AND width need to change together - margin-left alone
+   shifts the content right without shrinking it, which pushes whatever
+   used to be at the right edge (the 3-dot menu, account button) off the
+   right side of the screen by exactly the sidebar's width. */
 html[mts-active="1"] ytd-app {
   margin-left: 320px !important;
-  transition: margin-left 0.15s ease;
+  width: calc(100% - 320px) !important;
+  max-width: calc(100% - 320px) !important;
+  box-sizing: border-box !important;
+  transition: margin-left 0.15s ease, width 0.15s ease;
 }
 
 html[mts-active="1"][mts-fullscreen="1"] ytd-app {
   margin-left: 0 !important;
+  width: 100% !important;
+  max-width: 100% !important;
 }
 
 html[mts-active="1"][mts-fullscreen="1"] #mts-sidebar {
@@ -59,7 +64,7 @@ html[mts-active="1"][mts-fullscreen="1"] #mts-sidebar {
 }
 
 /* When the user expands YouTube's full guide drawer (hamburger menu),
-   shift it to the right of our sidebar instead of letting it render
+   shift it to the right of my sidebar instead of letting it render
    underneath (it's normally fixed to the viewport's left edge). */
 html[mts-active="1"]:not([mts-fullscreen="1"]) tp-yt-app-drawer#guide {
   left: 320px !important;
@@ -152,17 +157,6 @@ html[mts-active="1"]:not([mts-fullscreen="1"]) tp-yt-iron-overlay-backdrop {
   display: none;
 }
 
-#mts-current-card .mts-title {
-  font-size: 12px;
-  font-weight: 600;
-  line-height: 1.3;
-  margin-bottom: 6px;
-  display: -webkit-box;
-  -webkit-line-clamp: 2;
-  -webkit-box-orient: vertical;
-  overflow: hidden;
-}
-
 .mts-btn-row {
   display: flex;
   flex-wrap: wrap;
@@ -204,16 +198,6 @@ html[mts-active="1"]:not([mts-fullscreen="1"]) tp-yt-iron-overlay-backdrop {
   background: var(--mts-accent);
   border-color: var(--mts-accent);
   color: #3a2410;
-}
-
-.mts-select {
-  background: var(--mts-surface);
-  color: var(--mts-text);
-  border: 1px solid var(--mts-border);
-  padding: 5px 8px;
-  border-radius: var(--mts-radius);
-  font-size: 11px;
-  max-width: 140px;
 }
 
 .mts-pl-checkbox-list {
@@ -270,9 +254,32 @@ html[mts-active="1"]:not([mts-fullscreen="1"]) tp-yt-iron-overlay-backdrop {
 }
 
 .mts-tab .mts-icon {
-  font-size: 15px;
+  display: inline-flex;
   line-height: 1;
   flex-shrink: 0;
+}
+
+.mts-tab .mts-icon svg {
+  display: block;
+}
+
+.mts-icon-inline {
+  display: inline-flex;
+  vertical-align: middle;
+  position: relative;
+  top: -1px;
+}
+
+.mts-icon-inline svg {
+  display: block;
+}
+
+#mts-reload-btn svg {
+  display: block;
+}
+
+.mts-remove-btn svg {
+  display: block;
 }
 
 .mts-tab .mts-tab-label {
@@ -370,22 +377,6 @@ html[mts-active="1"]:not([mts-fullscreen="1"]) tp-yt-iron-overlay-backdrop {
   color: var(--mts-success);
 }
 
-.mts-channel-block {
-  margin-bottom: 14px;
-  padding-bottom: 10px;
-  border-bottom: 1px solid var(--mts-border);
-}
-
-.mts-channel-header {
-  display: flex;
-  justify-content: space-between;
-  align-items: center;
-  margin-bottom: 6px;
-  font-size: 12px;
-  font-weight: 600;
-  color: var(--mts-accent);
-}
-
 .mts-playlist-row {
   display: flex;
   justify-content: space-between;
@@ -460,6 +451,14 @@ html[mts-active="1"]:not([mts-fullscreen="1"]) tp-yt-iron-overlay-backdrop {
   font-size: 12px;
   padding: 12px 4px;
   text-align: center;
+}
+
+.mts-feed-warning {
+  color: #b45309;
+  background: rgba(180, 83, 9, 0.1);
+  border-radius: 6px;
+  margin: 4px 0;
+  padding: 8px;
 }
 
 .mts-remove-btn {
@@ -566,8 +565,11 @@ html[mts-active="1"]:not([mts-fullscreen="1"]) tp-yt-iron-overlay-backdrop {
 
   .mts-mobile-tab .mts-icon {
     display: block;
-    font-size: 18px;
     margin-bottom: 2px;
+  }
+
+  .mts-mobile-tab .mts-icon svg {
+    display: inline-block;
   }
 
   .mts-mobile-tab .mts-sync-dot {

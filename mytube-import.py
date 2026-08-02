@@ -95,7 +95,7 @@ def _is_yt_folder(path):
         return False
     entries = set(os.listdir(path))
     # Must contain at least one of the characteristic sub-folders.
-    # We check by sniffing content rather than names (see find_* helpers below).
+    # Checked by sniffing content rather than names (see find_* helpers below).
     for entry in entries:
         if _looks_like_my_activity_folder(entry):
             continue
@@ -409,7 +409,7 @@ def import_subscriptions(yt_folder, base_url, token):
 
 # Filename stem patterns (lowercased, stripped of the trailing "-video" suffix
 # that German Takeout appends) that map to MyTube system playlists.
-# We match against the stem both with and without a trailing "-video" part.
+# Matched against the stem both with and without a trailing "-video" part.
 _SYSTEM_PLAYLIST_STEMS = {
     # English Takeout stems (after stripping -Videos? suffix)
     "watch later":    "Watch Later",
@@ -423,7 +423,7 @@ def _playlist_system_name(filename_stem):
     or return None for regular playlists.
 
     Takeout appends '-Video' or '-Videos' to every playlist CSV filename in
-    some locales/versions. We strip that suffix before looking up the stem.
+    some locales/versions. That suffix is stripped before looking up the stem.
     """
     # Strip trailing -Videos or -Video (case-insensitive)
     stem = re.sub(r"-Videos?$", "", filename_stem, flags=re.IGNORECASE).strip()
@@ -436,7 +436,7 @@ def _read_playlist_video_ids(csv_path):
 
     Both English and German formats have a video-ID column, but with different
     header names and sometimes preamble lines before the real header.
-    We scan for the first row containing a recognisable ID column name.
+    This scans for the first row containing a recognisable ID column name.
     """
     _ID_COLS = {"Video-ID", "Video Id", "video_id", "Video ID"}
     _URL_COLS = {"Video URL"}
@@ -582,7 +582,7 @@ def parse_takeout_timestamp(text):
 
     The German numeric format ("DD.MM.YYYY, HH:MM:SS TZ") is confirmed
     against real exports. The English format is best-effort: Google's
-    English exports use a different layout, but we don't have a confirmed
+    English exports use a different layout, but I don't have a confirmed
     real sample to verify against, so unrecognised text just falls back to
     None rather than raising - callers should treat that as "unknown time"
     and keep working rather than fail the whole import.
