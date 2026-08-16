@@ -263,6 +263,30 @@ def fetch_youtube_rss_videos(channel_id: str, limit: int = 5):
         return {"videos": [], "ok": False}
 
 
+# Cap how many RSS fetches are in flight at once. Firing every
+# subscription's request simultaneously (the previous behavior) appears to
+# trigger unreliable responses (a mix of 404s and 500s, inconsistent per
+# channel) from YouTube's feed endpoint under that burst, based on
+# production logs. A modest cap keeps almost all of the speed benefit over
+# the old fully-sequential version while avoiding that burst.
+#
+# Created lazily (on first use, inside the running event loop) rather than
+# here at module-import time - an asyncio.Semaphore constructed before any
+# loop is running can end up bound to the wrong one, which raises
+# "bound to a different event loop" later. No extra locking is needed for
+# this lazy init: there's no `await` between the None-check and the
+# assignment below, so nothing can interleave between them on the same loop.
+_rss_fetch_concurrency = None
+
+
+async def _fetch_channel_feed(loop, channel_id: str, limit: int):
+    global _rss_fetch_concurrency
+    if _rss_fetch_concurrency is None:
+        _rss_fetch_concurrency = asyncio.Semaphore(4)
+    async with _rss_fetch_concurrency:
+        return await loop.run_in_executor(None, fetch_youtube_rss_videos, channel_id, limit)
+
+
 @app.get("/subscriptions/feed")
 async def get_subscription_feed(
     db: Session = Depends(get_db),
@@ -277,11 +301,12 @@ async def get_subscription_feed(
     # it, every other request this server is handling, including unrelated
     # ones like fetching a playlist - for the full duration of every RSS
     # fetch, one channel at a time. Running them concurrently via a thread
-    # pool fixes both the server-wide stalling and the per-channel latency
-    # that comes from being stuck behind everything fetched before it.
+    # pool (capped, see _fetch_channel_feed above) fixes both the
+    # server-wide stalling and the per-channel latency that comes from
+    # being stuck behind everything fetched before it.
     loop = asyncio.get_event_loop()
     tasks = [
-        loop.run_in_executor(None, fetch_youtube_rss_videos, sub.channel_id, 15)
+        _fetch_channel_feed(loop, sub.channel_id, 15)
         for sub in subscriptions
     ]
     results = await asyncio.gather(*tasks)

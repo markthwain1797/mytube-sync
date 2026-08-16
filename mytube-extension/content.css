@@ -479,6 +479,10 @@ html[mts-active="1"]:not([mts-fullscreen="1"]) tp-yt-iron-overlay-backdrop {
   display: none;
 }
 
+#mts-mobile-actions {
+  display: none;
+}
+
 @media (max-width: 900px), (pointer: coarse) {
   #mts-sidebar { display: none !important; }
 
